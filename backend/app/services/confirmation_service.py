@@ -162,6 +162,15 @@ def _create_task_from_start(db: Session, confirmation: PendingConfirmation) -> T
             actor="ai",
         )
     )
+    db.add(
+        TaskEvent(
+            task_id=task.id,
+            type="milestone_start",
+            note="任务开始",
+            actor="ai",
+            created_at=task.started_at or time.time(),
+        )
+    )
     db.flush()
 
     # Link the source segment and any already-extracted candidates.

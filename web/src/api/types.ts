@@ -44,6 +44,7 @@ export interface TaskDetail extends Task {
   milestones: TimelineEvent[];
   issues: Issue[];
   deliverables: Deliverable[];
+  conversation_message_ids: number[];
 }
 
 export interface TimelineEvent {

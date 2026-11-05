@@ -106,10 +106,14 @@ export default function TaskDetailDrawer({
   });
   const projects = useQuery({ queryKey: ["projects"], queryFn: api.projects });
   const members = useQuery({ queryKey: ["members"], queryFn: api.members });
+  const conversationIds =
+    detail.data?.conversation_message_ids?.length
+      ? detail.data.conversation_message_ids
+      : detail.data?.source_message_ids || [];
   const source = useQuery({
-    queryKey: ["source-messages", detail.data?.source_message_ids],
-    queryFn: () => api.sourceMessages(detail.data!.source_message_ids),
-    enabled: Boolean(detail.data?.source_message_ids?.length),
+    queryKey: ["source-messages", conversationIds],
+    queryFn: () => api.sourceMessages(conversationIds),
+    enabled: conversationIds.length > 0,
   });
 
   useEffect(() => {
@@ -604,7 +608,11 @@ export default function TaskDetailDrawer({
                 { key: "milestones", label: "里程碑", count: task.milestones.length },
                 { key: "issues", label: "问题", count: task.issues.length },
                 { key: "deliverables", label: "交付物", count: task.deliverables.length },
-                { key: "source", label: "来源会话", count: task.source_message_ids.length },
+                {
+                  key: "source",
+                  label: "飞书对话",
+                  count: source.data?.items.length ?? conversationIds.length,
+                },
                 { key: "comment", label: "评论" },
               ]}
             />
@@ -995,7 +1003,7 @@ export default function TaskDetailDrawer({
                   </p>
                 </div>
               ))}
-              {!task.source_message_ids.length ? (
+              {!conversationIds.length ? (
                 <EmptyState title="没有来源消息" description="手动创建的任务没有 Hermes 来源。" />
               ) : null}
             </div>

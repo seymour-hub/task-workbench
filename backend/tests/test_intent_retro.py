@@ -40,6 +40,13 @@ def test_parse_agent_markers():
     ]
 
 
+def test_placeholder_markers_are_ignored():
+    assert parse_agent_markers("[[WB_START: ≤24字标题]]") == []
+    assert parse_agent_markers("[[WB_START: 标题]]") == []
+    assert parse_agent_markers("`[[WB_START: 产品A 方案优化]]`") == []
+    assert parse_agent_markers("```\n[[WB_START: 产品A 方案优化]]\n```") == []
+
+
 def test_agent_marker_creates_confirmation(db, monkeypatch):
     db.add(SyncState(key="agent_marker_cursor.message_id", value="0"))
     db.add(SessionCache(id="session-1", source="feishu", chat_id="oc_test"))

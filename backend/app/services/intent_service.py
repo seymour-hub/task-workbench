@@ -64,14 +64,39 @@ RETRO_ADD = re.compile(
 RETRO_QUESTION = ("是否", "有没有", "吗", "?", "？")
 
 AGENT_MARKER_RE = re.compile(r"\[\[WB_(START|DONE|ADD):\s*(.+?)\]\]", re.IGNORECASE)
+PLACEHOLDER_TITLES = {
+    "标题",
+    "任务标题",
+    "≤24字标题",
+    "24字标题",
+    "示例",
+    "示例标题",
+    "占位标题",
+}
+FENCE_RE = re.compile(r"(?s)```.*?```")
+INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
+
+
+def _valid_marker_title(title: str) -> bool:
+    clean = title.strip().strip("\"'“”「」《》 ")
+    if len(clean) < 3 or clean in PLACEHOLDER_TITLES:
+        return False
+    if any(char in clean for char in "<>≤≥"):
+        return False
+    if "不超过" in clean or clean.startswith(("示例", "占位", "TODO", "todo")):
+        return False
+    return True
 
 
 def parse_agent_markers(text: str) -> list[tuple[str, str]]:
+    # Ignore markers quoted inside code fences or inline code: those are
+    # usually examples from the rules, not real task markers.
+    clean = INLINE_CODE_RE.sub(" ", FENCE_RE.sub(" ", text or ""))
     markers: list[tuple[str, str]] = []
-    for match in AGENT_MARKER_RE.finditer(text or ""):
+    for match in AGENT_MARKER_RE.finditer(clean):
         kind = match.group(1).upper()
         title = match.group(2).strip().strip("\"'“”「」")[:120]
-        if title:
+        if _valid_marker_title(title):
             markers.append((kind, title))
     return markers
 
@@ -483,7 +508,9 @@ def scan_intents(
                     ]
                     + [message.hermes_message_id],
                     "started_at": started_at,
-                    "source_excerpt": text[:500],
+                    "source_excerpt": (
+                        context[-1][1] if context else text
+                    )[:500],
                     "confidence": 0.9,
                     "retro_added": True,
                 },

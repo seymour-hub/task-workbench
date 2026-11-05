@@ -11,7 +11,9 @@ from ..models import (
     Deliverable,
     Issue,
     Member,
+    MessageCache,
     Project,
+    Segment,
     Task,
     TaskEvent,
 )
@@ -322,6 +324,31 @@ def add_comment(db: Session, task: Task, note: str, *, actor: str = "me") -> Tas
 
 def get_detail(db: Session, task: Task) -> dict[str, Any]:
     base = serialize_task(db, task)
+    conversation_ids: set[int] = {
+        int(value) for value in (task.source_message_ids or []) if value
+    }
+    segments = list(
+        db.scalars(select(Segment).where(Segment.task_id == task.id))
+    )
+    if segments and task.source_session_id:
+        ranges = [
+            (segment.start_message_id, segment.end_message_id)
+            for segment in segments
+        ]
+        low = min(start for start, _end in ranges)
+        high = max(end for _start, end in ranges)
+        for message_id in db.scalars(
+            select(MessageCache.hermes_message_id)
+            .where(
+                MessageCache.session_id == task.source_session_id,
+                MessageCache.hermes_message_id >= low,
+                MessageCache.hermes_message_id <= high,
+            )
+            .order_by(MessageCache.hermes_message_id.asc())
+        ):
+            if any(start <= message_id <= end for start, end in ranges):
+                conversation_ids.add(int(message_id))
+    base["conversation_message_ids"] = sorted(conversation_ids)[:1000]
     events = list(
         db.scalars(
             select(TaskEvent)

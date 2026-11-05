@@ -107,8 +107,16 @@ def source_messages(
             .order_by(MessageCache.hermes_message_id.asc())
         )
     )
-    return {
-        "items": [
+    items: list[dict] = []
+    seen_hashes: set[str] = set()
+    for row in rows:
+        if not (row.content or "").strip():
+            continue
+        if row.content_hash:
+            if row.content_hash in seen_hashes:
+                continue
+            seen_hashes.add(row.content_hash)
+        items.append(
             {
                 "id": row.hermes_message_id,
                 "session_id": row.session_id,
@@ -118,9 +126,8 @@ def source_messages(
                 "timestamp": row.timestamp,
                 "truncated": row.truncated,
             }
-            for row in rows
-        ]
-    }
+        )
+    return {"items": items}
 
 
 @router.get("/segments")
