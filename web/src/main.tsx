@@ -7,6 +7,10 @@ import App from "./App";
 import { loadTaxonomy } from "./lib/taxonomy";
 import "./index.css";
 
+if (new URLSearchParams(window.location.search).get("dock") === "1") {
+  document.documentElement.classList.add("dock-mode");
+}
+
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {

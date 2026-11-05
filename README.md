@@ -17,6 +17,7 @@
 - **文件只读索引**：只索引元数据，点击交付物可在工作台内直接预览。
 - **十个模块**：工作台、我的任务、任务看板、项目管理、日程日历、团队协作、统计报表、文件资料、消息通知、设置。
 - **桌面快捷方式**：双击图标即可打开（自动隐藏启动服务）。
+- **桌面侧边栏（可选）**：Tauri 窄栏，贴边、智能置顶、失焦收起、全局热键。
 
 ## 飞书是怎么打通的
 
@@ -99,6 +100,37 @@ powershell -ExecutionPolicy Bypass -File scripts\create-shortcut.ps1
 ```
 
 > 首次使用请先完成上面的前端构建，再创建快捷方式；否则服务能启动，但页面会是 404。
+
+## 桌面侧边栏（Tauri，可选）
+
+浏览器版本完全保留；另外提供一个 420px 宽的桌面侧边窗口。
+
+行为：
+
+- 右侧贴边，底部与 Windows 任务栏对齐
+- 智能置顶：窗口激活时置顶；切换到文件/PPT/浏览器时自动让出，不会被压住
+- 失焦自动收起（默认开启）
+- 托盘菜单 + 全局快捷键 `Ctrl+Alt+Shift+W`；托盘可切换「永久置顶」
+- 启动时检查本地服务，未运行则尝试通过 `scripts/start-server.ps1` 启动
+
+构建（需要 Rust + VS 2022 Build Tools 的 C++ 工作负载 + WebView2）：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup-tauri.ps1
+cd desktop\src-tauri
+cargo build --release
+cd ..\..
+powershell -ExecutionPolicy Bypass -File scripts\create-dock-shortcut.ps1
+```
+
+环境变量：
+
+| 变量 | 默认值 | 说明 |
+|---|---|---|
+| `WORKBENCH_WIDTH` | `420` | 窄栏宽度（逻辑像素） |
+| `WORKBENCH_HOTKEY` | `ctrl+alt+shift+w` | 显示 / 隐藏快捷键 |
+| `WORKBENCH_NO_BLUR` | — | 设为 `1` 关闭失焦收起（调试用） |
+| `WORKBENCH_AUTOSTART` | — | 设为 `1` 让侧边栏随登录启动 |
 
 ## 常见问题
 

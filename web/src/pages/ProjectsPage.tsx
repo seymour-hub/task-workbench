@@ -77,7 +77,7 @@ export default function ProjectsPage() {
               key={project.id}
               to={`/projects/${project.id}`}
               className={cn(
-                "card group relative overflow-hidden p-5 transition hover:border-brand-500/40 hover:bg-ink-750/70",
+                "project-card card group relative overflow-hidden p-5 transition hover:border-brand-500/40 hover:bg-ink-750/70",
                 project.status !== "active" && "opacity-60",
               )}
             >
@@ -88,15 +88,19 @@ export default function ProjectsPage() {
               <div className="flex items-start justify-between gap-3">
                 <div className="flex items-center gap-3">
                   <span
-                    className="flex h-10 w-10 items-center justify-center rounded-xl text-white"
+                    className="project-icon flex h-10 w-10 items-center justify-center rounded-xl text-white"
                     style={{ background: `${project.color}28`, color: project.color }}
                   >
                     <FolderKanban size={19} />
                   </span>
                   <div>
-                    <p className="text-[15px] font-semibold text-mist-100">{project.name}</p>
-                    <p className="mt-0.5 line-clamp-1 text-[11px] text-mist-500">
+                    <p className="project-name text-[15px] font-semibold text-mist-100">{project.name}</p>
+                    <p className="project-desc mt-0.5 line-clamp-1 text-[11px] text-mist-500">
                       {project.description || "暂无描述"}
+                    </p>
+                    <p className="project-counts mt-1 text-[10px] text-mist-500">
+                      {project.task_count} 任务 · {project.done_count} 完成 ·{" "}
+                      {project.overdue_count} 逾期
                     </p>
                   </div>
                 </div>
@@ -106,7 +110,7 @@ export default function ProjectsPage() {
                 />
               </div>
 
-              <div className="mt-5">
+              <div className="project-progress mt-5">
                 <div className="mb-1.5 flex justify-between text-[11px]">
                   <span className="text-mist-500">整体进度</span>
                   <span className="text-mist-200">{project.progress}%</span>
@@ -114,7 +118,7 @@ export default function ProjectsPage() {
                 <ProgressBar value={project.progress} color={project.color} height={7} />
               </div>
 
-              <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+              <div className="project-stats mt-4 grid grid-cols-3 gap-2 text-center">
                 <div className="rounded-lg bg-ink-900/50 py-2">
                   <p className="text-[16px] font-semibold text-mist-100">{project.task_count}</p>
                   <p className="text-[10px] text-mist-500">任务</p>

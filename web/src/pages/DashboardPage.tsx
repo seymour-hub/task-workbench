@@ -136,7 +136,7 @@ export default function DashboardPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="stat-grid grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {cards.map((card, index) => {
           const style = STAT_STYLES[index];
           const Icon = style.icon;
@@ -152,9 +152,9 @@ export default function DashboardPage() {
             >
               <div className="flex items-start justify-between">
                 <div>
-                  <p className="text-[12px] text-mist-400">{card.label}</p>
+                  <p className="stat-label text-[12px] text-mist-400">{card.label}</p>
                   <p className="mt-2 flex items-baseline gap-1.5">
-                    <span className="text-[30px] font-semibold leading-none text-mist-100">
+                    <span className="stat-value text-[30px] font-semibold leading-none text-mist-100">
                       {card.value}
                     </span>
                     <span className="text-[11px] text-mist-500">个</span>
@@ -162,7 +162,7 @@ export default function DashboardPage() {
                 </div>
                 <span
                   className={cn(
-                    "flex h-10 w-10 items-center justify-center rounded-xl text-white",
+                    "stat-icon flex h-10 w-10 items-center justify-center rounded-xl text-white",
                     style.iconBg,
                     style.glow,
                   )}
@@ -171,7 +171,9 @@ export default function DashboardPage() {
                 </span>
               </div>
               <div className="mt-3 flex items-center justify-between gap-2">
-                <p className={cn("text-[11px]", card.color)}>{card.hint}</p>
+                <p className={cn("stat-hint text-[11px]", card.color)}>
+                  {card.hint}
+                </p>
                 <ArrowUpRight
                   size={13}
                   className="shrink-0 text-mist-500 opacity-0 transition group-hover:opacity-100"

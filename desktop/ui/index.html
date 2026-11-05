@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>任务管理工作台</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0a1020;
+        color: #8a9ab8;
+        font-family: "Microsoft YaHei", system-ui, sans-serif;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="status">正在启动任务管理工作台…</div>
+    <script>
+      const status = document.getElementById("status");
+      async function boot() {
+        for (let i = 0; i < 60; i += 1) {
+          try {
+            const response = await fetch("http://127.0.0.1:8787/api/health");
+            if (response.ok) {
+              window.location.replace("http://127.0.0.1:8787/?dock=1");
+              return;
+            }
+          } catch (error) {
+            /* server is still starting */
+          }
+          await new Promise((resolve) => setTimeout(resolve, 500));
+        }
+        status.textContent = "工作台服务没有启动，请检查后台服务。";
+      }
+      boot();
+    </script>
+  </body>
+</html>

@@ -47,7 +47,9 @@ export default function TasksPage() {
   const [category, setCategory] = useState("");
   const [workType, setWorkType] = useState("");
   const [keyword, setKeyword] = useState(params.get("q") || "");
-  const [view, setView] = useState<"list" | "table">("table");
+  const [view, setView] = useState<"list" | "table">(
+    window.innerWidth < 700 ? "list" : "table",
+  );
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
   const { openTask } = useTaskDrawer();
@@ -326,12 +328,15 @@ export default function TasksPage() {
                       className="h-2 w-2 shrink-0 rounded-full"
                       style={{ background: task.overdue ? "#EF4444" : "#5B7CFA" }}
                     />
-                    <span className="min-w-0 flex-1 truncate text-[13px] text-mist-200">
+                    <span
+                      className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-5 text-mist-200"
+                      title={task.title}
+                    >
                       {task.title}
                     </span>
                     {task.category ? (
                       <span
-                        className="pill shrink-0 border border-ink-700 bg-ink-800"
+                        className="pill hidden shrink-0 border border-ink-700 bg-ink-800 sm:inline-block"
                         style={{ color: categoryColor(task.category) }}
                         title={task.subcategory || task.category}
                       >
@@ -341,7 +346,7 @@ export default function TasksPage() {
                     <PriorityBadge priority={task.priority} />
                     <span
                       className={cn(
-                        "w-[130px] text-right text-[11px]",
+                        "hidden w-[130px] text-right text-[11px] sm:block",
                         task.status === "done" ? "text-mist-500" : deadline.tone,
                       )}
                     >

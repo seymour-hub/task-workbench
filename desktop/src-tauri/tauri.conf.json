@@ -1,0 +1,33 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "任务管理工作台",
+  "version": "0.1.0",
+  "identifier": "com.seymour.taskworkbench.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "任务管理工作台",
+        "width": 420,
+        "height": 900,
+        "minWidth": 380,
+        "minHeight": 600,
+        "resizable": true,
+        "decorations": true,
+        "alwaysOnTop": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "icon": ["icons/icon.ico"]
+  }
+}

@@ -126,7 +126,7 @@ export default function AppShell() {
 
       <aside
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-[232px] flex-col border-r border-ink-700/70 bg-ink-900/95 px-3 py-4 backdrop-blur transition-transform lg:static lg:translate-x-0",
+          "app-sidebar fixed inset-y-0 left-0 z-40 flex w-[232px] flex-col border-r border-ink-700/70 bg-ink-900/95 px-3 py-4 backdrop-blur transition-transform lg:static lg:translate-x-0",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
         )}
       >
