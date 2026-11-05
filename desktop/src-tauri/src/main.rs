@@ -2,17 +2,20 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tauri::{Manager, WindowEvent};
+use tauri::{Manager, PhysicalPosition, WebviewWindow, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 #[cfg(not(debug_assertions))]
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const DEFAULT_WIDTH: f64 = 420.0;
+/// How many logical pixels of the window remain visible at the right edge.
+const COLLAPSED_STRIP: f64 = 8.0;
 
-/// When false, the window is top-most only while focused, so other windows
-/// (file explorer, PowerPoint, …) can come forward. The tray menu can pin it.
+/// When true the dock never auto-collapses and stays top-most.
 static PINNED: AtomicBool = AtomicBool::new(false);
+/// True while the dock is fully on screen; false while collapsed to the edge.
+static EXPANDED: AtomicBool = AtomicBool::new(true);
 
 fn window_width() -> f64 {
     std::env::var("WORKBENCH_WIDTH")
@@ -22,62 +25,144 @@ fn window_width() -> f64 {
         .unwrap_or(DEFAULT_WIDTH)
 }
 
-fn toggle_window(app: &tauri::AppHandle) {
+#[cfg(windows)]
+fn work_area() -> Option<(i32, i32, i32, i32)> {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SystemParametersInfoW, SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+    };
+    let mut rect = RECT::default();
+    let result = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut rect as *mut _ as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    if result.is_ok() {
+        Some((rect.left, rect.top, rect.right, rect.bottom))
+    } else {
+        None
+    }
+}
+
+#[cfg(not(windows))]
+fn work_area() -> Option<(i32, i32, i32, i32)> {
+    None
+}
+
+#[cfg(windows)]
+fn cursor_position() -> Option<(i32, i32)> {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+    let mut point = POINT::default();
+    unsafe { GetCursorPos(&mut point).ok()? };
+    Some((point.x, point.y))
+}
+
+#[cfg(not(windows))]
+fn cursor_position() -> Option<(i32, i32)> {
+    None
+}
+
+fn expand(window: &WebviewWindow, focus: bool) {
+    if let Some((_left, top, right, _bottom)) = work_area() {
+        if let Ok(outer) = window.outer_size() {
+            let x = right - outer.width as i32;
+            let _ = window.set_position(PhysicalPosition::new(x, top));
+        }
+    }
+    let _ = window.set_always_on_top(true);
+    EXPANDED.store(true, Ordering::Relaxed);
+    if focus {
+        let _ = window.set_focus();
+    }
+}
+
+fn collapse(window: &WebviewWindow) {
+    if PINNED.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some((_left, top, right, _bottom)) = work_area() {
+        let scale = window.scale_factor().unwrap_or(1.0);
+        let strip = (COLLAPSED_STRIP * scale).round() as i32;
+        let _ = window.set_position(PhysicalPosition::new(right - strip, top));
+    }
+    // Keep the thin strip above other windows so the right-edge hot zone works.
+    let _ = window.set_always_on_top(true);
+    EXPANDED.store(false, Ordering::Relaxed);
+}
+
+fn toggle_window(app: &tauri::AppHandle, focus: bool) {
     if let Some(window) = app.get_webview_window("main") {
-        if window.is_visible().unwrap_or(false) {
-            let _ = window.hide();
+        if EXPANDED.load(Ordering::Relaxed) {
+            collapse(&window);
         } else {
-            let _ = window.show();
-            let _ = window.set_always_on_top(true);
-            let _ = window.set_focus();
+            expand(&window, focus);
         }
     }
 }
 
-fn position_window(window: &tauri::WebviewWindow) {
+fn start_edge_watcher(window: WebviewWindow) {
+    std::thread::spawn(move || {
+        let mut outside_ticks = 0;
+        loop {
+            std::thread::sleep(Duration::from_millis(120));
+            let Some((_left, _top, right, bottom)) = work_area() else {
+                continue;
+            };
+            let Some((x, y)) = cursor_position() else {
+                continue;
+            };
+            let at_edge = x >= right - 3 && y < bottom;
+            let expanded = EXPANDED.load(Ordering::Relaxed);
+
+            if at_edge && !expanded {
+                expand(&window, false);
+                outside_ticks = 0;
+                continue;
+            }
+
+            if expanded
+                && !PINNED.load(Ordering::Relaxed)
+                && !window.is_focused().unwrap_or(false)
+            {
+                if let Ok(position) = window.outer_position() {
+                    if x < position.x - 12 {
+                        outside_ticks += 1;
+                        if outside_ticks >= 4 {
+                            collapse(&window);
+                            outside_ticks = 0;
+                        }
+                    } else {
+                        outside_ticks = 0;
+                    }
+                }
+            } else {
+                outside_ticks = 0;
+            }
+        }
+    });
+}
+
+fn position_window(window: &WebviewWindow) {
     if let Ok(Some(monitor)) = window.current_monitor() {
         let scale = monitor.scale_factor();
-
-        #[cfg(windows)]
-        let (work_left, work_top, work_width, work_height) = {
-            use windows::Win32::Foundation::RECT;
-            use windows::Win32::UI::WindowsAndMessaging::{
-                SystemParametersInfoW, SPI_GETWORKAREA,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
-            };
-            let mut rect = RECT::default();
-            let result = unsafe {
-                SystemParametersInfoW(
-                    SPI_GETWORKAREA,
-                    0,
-                    Some(&mut rect as *mut _ as *mut _),
-                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
-                )
-            };
-            if result.is_ok() {
-                (
-                    rect.left as f64 / scale,
-                    rect.top as f64 / scale,
-                    (rect.right - rect.left) as f64 / scale,
-                    (rect.bottom - rect.top) as f64 / scale,
-                )
-            } else {
-                (
-                    0.0,
-                    0.0,
-                    monitor.size().width as f64 / scale,
-                    monitor.size().height as f64 / scale - 48.0,
-                )
-            }
+        let (work_left, work_top, work_width, work_height) = match work_area() {
+            Some((left, top, right, bottom)) => (
+                left as f64 / scale,
+                top as f64 / scale,
+                (right - left) as f64 / scale,
+                (bottom - top) as f64 / scale,
+            ),
+            None => (
+                0.0,
+                0.0,
+                monitor.size().width as f64 / scale,
+                monitor.size().height as f64 / scale - 48.0,
+            ),
         };
-
-        #[cfg(not(windows))]
-        let (work_left, work_top, work_width, work_height) = (
-            0.0,
-            0.0,
-            monitor.size().width as f64 / scale,
-            monitor.size().height as f64 / scale - 48.0,
-        );
 
         let (frame_w, frame_h) = match (window.outer_size(), window.inner_size()) {
             (Ok(outer), Ok(inner)) => (
@@ -91,8 +176,7 @@ fn position_window(window: &tauri::WebviewWindow) {
         let target_height = (work_height - frame_h).max(600.0);
         let _ = window.set_size(tauri::LogicalSize::new(width, target_height));
         let x = work_left + work_width - width - frame_w;
-        let y = work_top;
-        let _ = window.set_position(tauri::LogicalPosition::new(x.max(0.0), y));
+        let _ = window.set_position(tauri::LogicalPosition::new(x.max(0.0), work_top));
     }
 }
 
@@ -100,8 +184,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let show = MenuItem::with_id(app, "show", "显示 / 隐藏", true, None::<&str>)?;
-    let pin = MenuItem::with_id(app, "pin", "切换置顶", true, None::<&str>)?;
+    let show = MenuItem::with_id(app, "show", "显示 / 收起", true, None::<&str>)?;
+    let pin = MenuItem::with_id(app, "pin", "切换永久置顶", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&show, &pin, &quit])?;
 
@@ -109,13 +193,17 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
-            "show" => toggle_window(app),
+            "show" => toggle_window(app, true),
             "pin" => {
                 let pinned = !PINNED.load(Ordering::Relaxed);
                 PINNED.store(pinned, Ordering::Relaxed);
                 if let Some(window) = app.get_webview_window("main") {
-                    let top = pinned || window.is_focused().unwrap_or(false);
-                    let _ = window.set_always_on_top(top);
+                    if pinned {
+                        expand(&window, false);
+                    } else {
+                        let top = window.is_focused().unwrap_or(false);
+                        let _ = window.set_always_on_top(top);
+                    }
                 }
             }
             "quit" => app.exit(0),
@@ -128,7 +216,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 ..
             } = event
             {
-                toggle_window(tray.app_handle());
+                toggle_window(tray.app_handle(), true);
             }
         });
     if let Some(icon) = app.default_window_icon().cloned() {
@@ -201,7 +289,7 @@ fn main() {
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, _shortcut, event| {
                     if event.state() == ShortcutState::Pressed {
-                        toggle_window(app);
+                        toggle_window(app, true);
                     }
                 })
                 .build(),
@@ -212,10 +300,15 @@ fn main() {
             window.set_always_on_top(true)?;
             window.show()?;
 
-            let hotkey = std::env::var("WORKBENCH_HOTKEY")
-                .unwrap_or_else(|_| "ctrl+alt+shift+w".to_string());
-            if let Err(error) = app.global_shortcut().register(hotkey.as_str()) {
-                eprintln!("failed to register hotkey {hotkey}: {error}");
+            // No default global hotkey: the right-edge hover and tray are
+            // enough. Power users can opt in with WORKBENCH_HOTKEY.
+            if let Ok(hotkey) = std::env::var("WORKBENCH_HOTKEY") {
+                let hotkey = hotkey.trim();
+                if !hotkey.is_empty() {
+                    if let Err(error) = app.global_shortcut().register(hotkey) {
+                        eprintln!("failed to register hotkey {hotkey}: {error}");
+                    }
+                }
             }
             build_tray(app)?;
 
@@ -231,19 +324,23 @@ fn main() {
             window.on_window_event(move |event| match event {
                 WindowEvent::Focused(true) => {
                     let _ = w.set_always_on_top(true);
+                    if !EXPANDED.load(Ordering::Relaxed) {
+                        expand(&w, false);
+                    }
                 }
                 WindowEvent::Focused(false) => {
-                    // Not pinned: let other windows (file dialogs, Explorer,
-                    // PowerPoint, …) come forward instead of being covered.
-                    if !PINNED.load(Ordering::Relaxed) {
-                        let _ = w.set_always_on_top(false);
+                    if PINNED.load(Ordering::Relaxed) {
+                        return;
                     }
-                    if blur_enabled && !PINNED.load(Ordering::Relaxed) {
+                    // Let other windows (file dialogs, Explorer, PowerPoint, …)
+                    // come forward before sliding out of the way.
+                    let _ = w.set_always_on_top(false);
+                    if blur_enabled {
                         let w = w.clone();
                         std::thread::spawn(move || {
-                            std::thread::sleep(Duration::from_millis(400));
+                            std::thread::sleep(Duration::from_millis(350));
                             if !w.is_focused().unwrap_or(true) {
-                                let _ = w.hide();
+                                collapse(&w);
                             }
                         });
                     }
@@ -251,6 +348,7 @@ fn main() {
                 _ => {}
             });
 
+            start_edge_watcher(window.clone());
             std::thread::spawn(ensure_server);
             Ok(())
         })
