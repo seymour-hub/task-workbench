@@ -256,14 +256,3 @@ html.dock-mode .project-stats {
 html.dock-mode .project-progress {
   margin-top: 8px;
 }
-
-/* Thin visual handle on the left edge of the docked window */
-html.dock-mode body::before {
-  content: "";
-  position: fixed;
-  inset: 0 auto 0 0;
-  width: 3px;
-  background: #5b7cfa;
-  z-index: 9999;
-  pointer-events: none;
-}
