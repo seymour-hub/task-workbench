@@ -25,6 +25,24 @@ def clean_text(value: str | None) -> str:
     return text.strip()
 
 
+OUT_OF_BAND_MARKER = "[OUT-OF-BAND USER MESSAGE"
+
+
+def unwrap_user_text(value: str | None) -> str:
+    """Strip Hermes' out-of-band envelope and return the actual user text."""
+    text = clean_text(value)
+    if OUT_OF_BAND_MARKER not in text:
+        return text
+    body = text.split("]", 1)[1] if "]" in text else text
+    body = re.sub(
+        r"(?ms)^Gateway message origin.*?^Do not guess[^\n]*\n?",
+        "",
+        body,
+    )
+    body = body.replace("[/OUT-OF-BAND USER MESSAGE]", "")
+    return body.strip() or text
+
+
 def truncate(text: str, limit: int) -> tuple[str, bool]:
     if len(text) <= limit:
         return text, False

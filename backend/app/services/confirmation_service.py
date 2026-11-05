@@ -8,6 +8,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from ..ai.deduper import normalize_title
+from ..ingest.normalizer import unwrap_user_text
 from ..models import (
     Deliverable,
     InboxItem,
@@ -421,7 +422,7 @@ def scan_replies(
         max_seen = max(max_seen, message.hermes_message_id)
         if not pending:
             continue
-        text = (message.content or "").strip()
+        text = unwrap_user_text(message.content)
         if not text:
             continue
         message_chat = chat_id_for_session(db, message.session_id)

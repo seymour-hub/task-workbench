@@ -13,6 +13,7 @@ from .. import config
 from ..ai.client import AIError, chat_json
 from ..ai.deduper import similarity
 from ..db import get_setting
+from ..ingest.normalizer import unwrap_user_text
 from ..models import (
     MessageCache,
     PendingConfirmation,
@@ -47,11 +48,20 @@ COMPLETE_HINTS = (
 
 SYSTEM_MARKERS = (
     "[CONTEXT COMPACTION",
-    "[OUT-OF-BAND USER MESSAGE",
     "[SYSTEM",
     "Gateway message origin",
     "REFERENCE ONLY",
 )
+
+RETRO_ADD = re.compile(
+    r"(?:这个|此|刚才|上述|当前)?(?:的)?(?:任务|工作|内容)"
+    r"[^\n。！？?]{0,24}?(?:加入|加到|放进|同步到|补录到)"
+    r"[^\n。！？?]{0,12}?(?:工作台|任务管理)"
+    r"|^(?:请)?(?:把)?(?:这个|此|刚才)?(?:任务|工作|内容)?"
+    r"(?:加入|加到|放进|同步到|补录到)(?:任务管理)?工作台",
+    re.IGNORECASE,
+)
+RETRO_QUESTION = ("是否", "有没有", "吗", "?", "？")
 
 REPLY_ONLY = re.compile(
     r"^\s*(?:#?[A-F0-9]{4}\s*)?(?:加入|好|可以|是|确认|要|添加|建|不用|不要|不|否|"
@@ -145,13 +155,94 @@ def _needs_llm(text: str, heuristic: tuple[str, str | None, float]) -> bool:
     return heuristic[2] < 0.9
 
 
+def is_retro_add(text: str) -> bool:
+    clean = (text or "").strip()
+    if not clean or any(word in clean for word in RETRO_QUESTION):
+        return False
+    return bool(RETRO_ADD.search(clean))
+
+
+def _fallback_retro_title(text: str) -> str:
+    clean = re.sub(r"[A-Za-z]:\\[^\s，。；;、]+", "", text or "")
+    clean = re.sub(r"^\s*(?:\d+[.)、]\s*)+", "", clean).strip(" ，,。.;；、")
+    first = re.split(r"[。；;\n！!？?]", clean)[0].strip(" ，,。.;；、")
+    return (first or "补录任务")[:40]
+
+
+def _recent_user_messages(
+    db: Session, message: MessageCache, limit: int = 6
+) -> list[tuple[MessageCache, str]]:
+    since = (message.timestamp or time.time()) - 7200
+    rows = list(
+        db.scalars(
+            select(MessageCache)
+            .where(
+                MessageCache.session_id == message.session_id,
+                MessageCache.role == "user",
+                MessageCache.hermes_message_id < message.hermes_message_id,
+                MessageCache.timestamp >= since,
+            )
+            .order_by(MessageCache.hermes_message_id.desc())
+            .limit(limit)
+        )
+    )
+    rows.reverse()
+    result: list[tuple[MessageCache, str]] = []
+    for row in rows:
+        text = unwrap_user_text(row.content)
+        if not text or any(marker in text for marker in SYSTEM_MARKERS):
+            continue
+        if REPLY_ONLY.match(text):
+            continue
+        result.append((row, text))
+    return result
+
+
+def _retro_title(
+    db: Session, context: list[tuple[MessageCache, str]], trigger_text: str
+) -> str:
+    api_key = config.get_secret("DEEPSEEK_API_KEY")
+    if api_key and context:
+        lines = "\n".join(f"- {text[:300]}" for _row, text in context[-5:])
+        try:
+            data, _tokens = chat_json(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是任务标题生成器。根据用户最近的工作对话，为要补录到"
+                            "任务管理工作台的工作起一个简短标题（不超过24个汉字）。"
+                            "标题必须包含工作对象（产品/项目/文件名的主题）和动作，"
+                            "不要包含文件路径，例如「产品A 安全方案 PPT 第33页优化」。"
+                            '只输出 JSON：{"title":"..."}'
+                        ),
+                    },
+                    {"role": "user", "content": lines},
+                ],
+                api_key=api_key,
+                base_url=get_setting(
+                    db, "ai.base_url", config.DEFAULT_DEEPSEEK_BASE_URL
+                )
+                or "",
+                model=get_setting(db, "ai.model", config.DEFAULT_DEEPSEEK_MODEL)
+                or "",
+                max_tokens=200,
+            )
+            title = str(data.get("title") or "").strip()
+            if title:
+                return title[:60]
+        except AIError:
+            pass
+    return _fallback_retro_title(context[-1][1] if context else trigger_text)
+
+
 def classify_messages(
     db: Session, messages: list[MessageCache]
 ) -> dict[int, tuple[str, str | None, float]]:
     results: dict[int, tuple[str, str | None, float]] = {}
     candidates: list[MessageCache] = []
     for message in messages:
-        text = (message.content or "").strip()
+        text = unwrap_user_text(message.content)
         if not text or REPLY_ONLY.match(text):
             results[message.hermes_message_id] = ("none", None, 0.0)
             continue
@@ -301,7 +392,7 @@ def scan_intents(
                 ProcessedIntent.message_id == MessageCache.hermes_message_id,
             )
             .where(
-                ProcessedIntent.intent.in_(["start_task", "complete_task"]),
+                ProcessedIntent.intent.in_(["start_task", "complete_task", "retro_add"]),
                 MessageCache.content_hash.is_not(None),
             )
         )
@@ -339,7 +430,68 @@ def scan_intents(
         )
         chat_id = chat_id_for_session(db, message.session_id)
         active = active_tasks_for_chat(db, chat_id)
-        text = (message.content or "").strip()
+        text = unwrap_user_text(message.content)
+
+        if is_retro_add(text):
+            if message.content_hash and message.content_hash in processed_hashes:
+                mark(message.hermes_message_id, "duplicate_content")
+                continue
+            if any(
+                (item.payload or {}).get("chat_id") == chat_id
+                for item in pending_starts
+            ):
+                mark(message.hermes_message_id, "retro_pending")
+                continue
+            context = _recent_user_messages(db, message)
+            title = _retro_title(db, context, text)
+            if any(similarity(title, task.title) >= 75 for task in active):
+                mark(message.hermes_message_id, "retro_skipped")
+                continue
+            started_at = (
+                context[-1][0].timestamp
+                if context and context[-1][0].timestamp
+                else (message.timestamp or time.time())
+            )
+            confirmation = PendingConfirmation(
+                code=_new_code(db),
+                kind="start_task",
+                payload={
+                    "title": title,
+                    "chat_id": chat_id,
+                    "session_id": message.session_id,
+                    "message_ids": [
+                        row.hermes_message_id for row, _text in context
+                    ]
+                    + [message.hermes_message_id],
+                    "started_at": started_at,
+                    "source_excerpt": text[:500],
+                    "confidence": 0.9,
+                    "retro_added": True,
+                },
+                status="pending",
+                created_at=time.time(),
+                expires_at=time.time() + 86_400,
+            )
+            db.add(confirmation)
+            db.flush()
+            from .confirmation_service import resolve_confirmation
+
+            resolve_confirmation(db, confirmation, "加入", "yes")
+            mark(message.hermes_message_id, "retro_add")
+            if message.content_hash:
+                processed_hashes.add(message.content_hash)
+            questions.append(
+                {
+                    "code": confirmation.code,
+                    "kind": "start_task",
+                    "title": title,
+                    "sent": True,
+                    "error": None,
+                    "retro": True,
+                }
+            )
+            starts += 1
+            continue
 
         if intent == "start_task":
             if not title:
