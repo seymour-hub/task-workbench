@@ -63,6 +63,18 @@ RETRO_ADD = re.compile(
 )
 RETRO_QUESTION = ("是否", "有没有", "吗", "?", "？")
 
+AGENT_MARKER_RE = re.compile(r"\[\[WB_(START|DONE|ADD):\s*(.+?)\]\]", re.IGNORECASE)
+
+
+def parse_agent_markers(text: str) -> list[tuple[str, str]]:
+    markers: list[tuple[str, str]] = []
+    for match in AGENT_MARKER_RE.finditer(text or ""):
+        kind = match.group(1).upper()
+        title = match.group(2).strip().strip("\"'“”「」")[:120]
+        if title:
+            markers.append((kind, title))
+    return markers
+
 REPLY_ONLY = re.compile(
     r"^\s*(?:#?[A-F0-9]{4}\s*)?(?:加入|好|可以|是|确认|要|添加|建|不用|不要|不|否|"
     r"忽略|取消|完成|已完成|结束|还没|未完成|a|b|新任务)\s*$",
@@ -358,13 +370,20 @@ def scan_intents(
         .where(
             MessageCache.role == "user",
             SessionCache.source == "feishu",
+            MessageCache.hermes_message_id.not_in(
+                select(ProcessedIntent.message_id)
+            ),
         )
-        .order_by(MessageCache.hermes_message_id.asc())
     )
     if since is not None:
-        statement = statement.where(MessageCache.timestamp >= since).limit(300)
+        statement = statement.where(MessageCache.timestamp >= since)
+        max_rows = 300
     else:
-        statement = statement.where(MessageCache.hermes_message_id > cursor).limit(limit)
+        statement = statement.where(MessageCache.hermes_message_id > cursor)
+        max_rows = limit
+    statement = statement.order_by(MessageCache.hermes_message_id.asc()).limit(
+        max_rows
+    )
     messages = list(db.scalars(statement))
     if not messages:
         return {"checked": 0, "starts": 0, "completes": 0, "questions": []}
@@ -596,6 +615,206 @@ def scan_intents(
 
     if max_seen > cursor:
         _set_cursor(db, "intent_cursor.message_id", max_seen)
+    db.flush()
+    return {
+        "checked": len(messages),
+        "starts": starts,
+        "completes": completes,
+        "questions": questions,
+    }
+
+
+def scan_agent_markers(
+    db: Session, *, limit: int = 50, since: float | None = None
+) -> dict[str, Any]:
+    """Read [[WB_START/DONE/ADD: title]] markers from assistant replies."""
+    cursor = _ensure_cursor(db, "agent_marker_cursor.message_id")
+    statement = (
+        select(MessageCache)
+        .join(SessionCache, SessionCache.id == MessageCache.session_id)
+        .where(
+            MessageCache.role == "assistant",
+            SessionCache.source == "feishu",
+            MessageCache.content.like("%[[WB_%"),
+            MessageCache.hermes_message_id.not_in(
+                select(ProcessedIntent.message_id)
+            ),
+        )
+    )
+    if since is not None:
+        statement = statement.where(MessageCache.timestamp >= since)
+        max_rows = 300
+    else:
+        statement = statement.where(MessageCache.hermes_message_id > cursor)
+        max_rows = limit
+    statement = statement.order_by(MessageCache.hermes_message_id.asc()).limit(
+        max_rows
+    )
+    messages = list(db.scalars(statement))
+    if not messages:
+        return {"checked": 0, "starts": 0, "completes": 0, "questions": []}
+
+    ids = [message.hermes_message_id for message in messages]
+    processed_ids = set(
+        db.scalars(
+            select(ProcessedIntent.message_id).where(
+                ProcessedIntent.message_id.in_(ids)
+            )
+        )
+    )
+    messages = [
+        message for message in messages if message.hermes_message_id not in processed_ids
+    ]
+    if not messages:
+        return {"checked": 0, "starts": 0, "completes": 0, "questions": []}
+
+    processed_hashes = {
+        row[0]
+        for row in db.execute(
+            select(MessageCache.content_hash)
+            .join(
+                ProcessedIntent,
+                ProcessedIntent.message_id == MessageCache.hermes_message_id,
+            )
+            .where(
+                ProcessedIntent.intent == "agent_marker",
+                MessageCache.content_hash.is_not(None),
+            )
+        )
+        if row[0]
+    }
+    pending_starts = list(
+        db.scalars(
+            select(PendingConfirmation).where(
+                PendingConfirmation.kind == "start_task",
+                PendingConfirmation.status == "pending",
+            )
+        )
+    )
+    pending_completes = list(
+        db.scalars(
+            select(PendingConfirmation).where(
+                PendingConfirmation.kind == "complete_task",
+                PendingConfirmation.status == "pending",
+            )
+        )
+    )
+
+    starts = completes = 0
+    questions: list[dict[str, Any]] = []
+    max_seen = cursor
+
+    def mark(message_id: int, value: str) -> None:
+        db.add(ProcessedIntent(message_id=message_id, intent=value))
+
+    for message in messages:
+        max_seen = max(max_seen, message.hermes_message_id)
+        markers = parse_agent_markers(message.content or "")
+        if not markers:
+            mark(message.hermes_message_id, "agent_none")
+            continue
+        if message.content_hash and message.content_hash in processed_hashes:
+            mark(message.hermes_message_id, "duplicate_content")
+            continue
+
+        chat_id = chat_id_for_session(db, message.session_id)
+        active = active_tasks_for_chat(db, chat_id)
+        for kind, title in markers:
+            if kind in {"START", "ADD"}:
+                if any(similarity(title, task.title) >= 75 for task in active):
+                    continue
+                if any(
+                    (item.payload or {}).get("chat_id") == chat_id
+                    and similarity(
+                        title, (item.payload or {}).get("title") or ""
+                    )
+                    >= 75
+                    for item in pending_starts
+                ):
+                    continue
+                confirmation = create_confirmation(
+                    db,
+                    "start_task",
+                    {
+                        "title": title,
+                        "chat_id": chat_id,
+                        "session_id": message.session_id,
+                        "message_ids": [message.hermes_message_id],
+                        "started_at": message.timestamp or time.time(),
+                        "source_excerpt": (message.content or "")[:500],
+                        "confidence": 0.95,
+                        "agent_marker": kind,
+                    },
+                    _start_question(title),
+                )
+                pending_starts.append(confirmation)
+                starts += 1
+                questions.append(
+                    {
+                        "code": confirmation.code,
+                        "kind": "start_task",
+                        "title": title,
+                        "sent": bool(
+                            (confirmation.payload or {}).get("question_sent")
+                        ),
+                        "error": (confirmation.payload or {}).get(
+                            "question_error"
+                        ),
+                        "agent_marker": True,
+                    }
+                )
+            elif kind == "DONE":
+                scored = sorted(
+                    ((similarity(title, task.title), task) for task in active),
+                    key=lambda pair: pair[0],
+                    reverse=True,
+                )
+                if not scored or scored[0][0] < 50:
+                    continue
+                best_task = scored[0][1]
+                if any(
+                    int((item.payload or {}).get("task_id") or 0) == best_task.id
+                    for item in pending_completes
+                ):
+                    continue
+                confirmation = create_confirmation(
+                    db,
+                    "complete_task",
+                    {
+                        "task_id": best_task.id,
+                        "title": best_task.title,
+                        "chat_id": chat_id,
+                        "message_ids": [message.hermes_message_id],
+                        "completed_at": message.timestamp or time.time(),
+                        "source_excerpt": (message.content or "")[:500],
+                        "confidence": 0.95,
+                        "agent_marker": "DONE",
+                    },
+                    _complete_question(best_task.title),
+                )
+                pending_completes.append(confirmation)
+                completes += 1
+                questions.append(
+                    {
+                        "code": confirmation.code,
+                        "kind": "complete_task",
+                        "title": best_task.title,
+                        "sent": bool(
+                            (confirmation.payload or {}).get("question_sent")
+                        ),
+                        "error": (confirmation.payload or {}).get(
+                            "question_error"
+                        ),
+                        "agent_marker": True,
+                    }
+                )
+
+        mark(message.hermes_message_id, "agent_marker")
+        if message.content_hash:
+            processed_hashes.add(message.content_hash)
+
+    if max_seen > cursor:
+        _set_cursor(db, "agent_marker_cursor.message_id", max_seen)
     db.flush()
     return {
         "checked": len(messages),
