@@ -1,5 +1,7 @@
 # 任务管理工作台（Task Workbench）
 
+[![CI](https://github.com/seymour-hub/task-workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/seymour-hub/task-workbench/actions/workflows/ci.yml)
+
 一个本地单用户的任务管理工作台。它从本机 Hermes Agent 的会话库中只读同步你与 Agent 的飞书对话，自动沉淀出**任务、过程记录、问题、里程碑和交付物**，并通过飞书完成「开始任务 / 完成任务」的确认闭环。
 
 > 所有数据都在本机。工作台只读源数据库，不修改 Hermes，不上传任何文件内容。
