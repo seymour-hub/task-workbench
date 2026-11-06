@@ -14,18 +14,35 @@
       }
       body {
         display: flex;
+        flex-direction: column;
+        gap: 14px;
         align-items: center;
         justify-content: center;
         font-size: 13px;
       }
+      button {
+        padding: 6px 14px;
+        border: 1px solid #2b3a5c;
+        border-radius: 8px;
+        background: #16203a;
+        color: #e6ecf7;
+        font-size: 12px;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
-    <div id="status">正在启动任务管理工作台…</div>
+    <div id="status">正在启动本地服务…</div>
+    <button id="retry" style="display: none">重试</button>
     <script>
       const status = document.getElementById("status");
+      const retry = document.getElementById("retry");
+      retry.onclick = () => boot();
+
       async function boot() {
-        for (let i = 0; i < 60; i += 1) {
+        retry.style.display = "none";
+        status.textContent = "正在启动本地服务…（首次开机可能需要 1 分钟）";
+        for (let i = 0; i < 240; i += 1) {
           try {
             const response = await fetch("http://127.0.0.1:8787/api/health");
             if (response.ok) {
@@ -38,7 +55,9 @@
           await new Promise((resolve) => setTimeout(resolve, 500));
         }
         status.textContent = "工作台服务没有启动，请检查后台服务。";
+        retry.style.display = "inline-block";
       }
+
       boot();
     </script>
   </body>

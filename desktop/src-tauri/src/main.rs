@@ -226,6 +226,24 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn dock_log(message: &str) {
+    use std::io::Write;
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let dir = root.join("data").join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("dock.log"))
+    {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|value| value.as_secs())
+            .unwrap_or(0);
+        let _ = writeln!(file, "[{stamp}] {message}");
+    }
+}
+
 fn server_up() -> bool {
     let addr = match "127.0.0.1:8787".parse() {
         Ok(value) => value,
@@ -236,6 +254,7 @@ fn server_up() -> bool {
 
 fn ensure_server() {
     if server_up() {
+        dock_log("server already running");
         return;
     }
     let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -258,14 +277,21 @@ fn ensure_server() {
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
             command.creation_flags(CREATE_NO_WINDOW);
         }
-        let _ = command.spawn();
+        match command.spawn() {
+            Ok(child) => dock_log(&format!("started start-server.ps1 pid={}", child.id())),
+            Err(error) => dock_log(&format!("failed to start server: {error}")),
+        }
+    } else {
+        dock_log(&format!("start-server.ps1 missing: {}", script.display()));
     }
-    for _ in 0..60 {
+    for _ in 0..120 {
         if server_up() {
+            dock_log("server is up");
             return;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
+    dock_log("server did not come up within 60s");
 }
 
 fn main() {
