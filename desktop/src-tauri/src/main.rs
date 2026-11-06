@@ -165,7 +165,7 @@ fn toggle_window(app: &tauri::AppHandle, focus: bool) {
 
 fn start_edge_watcher(window: WebviewWindow, handle: WebviewWindow) {
     std::thread::spawn(move || {
-        let mut hover_ticks = 0;
+        let mut hover_since: Option<std::time::Instant> = None;
         let mut outside_ticks = 0;
         loop {
             std::thread::sleep(Duration::from_millis(120));
@@ -184,13 +184,14 @@ fn start_edge_watcher(window: WebviewWindow, handle: WebviewWindow) {
                         && y >= center_y - tab_h / 2
                         && y <= center_y + tab_h / 2;
                     if inside {
-                        hover_ticks += 1;
-                        if hover_ticks >= 3 {
+                        let since = *hover_since
+                            .get_or_insert_with(std::time::Instant::now);
+                        if since.elapsed() >= Duration::from_secs(2) {
                             expand(&window, false);
-                            hover_ticks = 0;
+                            hover_since = None;
                         }
                     } else {
-                        hover_ticks = 0;
+                        hover_since = None;
                     }
                 }
             } else if !PINNED.load(Ordering::Relaxed)
@@ -208,7 +209,7 @@ fn start_edge_watcher(window: WebviewWindow, handle: WebviewWindow) {
                     }
                 }
             } else {
-                hover_ticks = 0;
+                hover_since = None;
                 outside_ticks = 0;
             }
         }
