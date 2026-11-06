@@ -109,8 +109,8 @@ powershell -ExecutionPolicy Bypass -File scripts\create-shortcut.ps1
 
 - 右侧贴边，底部与 Windows 任务栏对齐
 - 智能置顶：窗口激活时置顶；切换到文件/PPT/浏览器时自动让出，不会被压住
-- 失焦或鼠标离开后滑到屏幕最右侧，只留 8px 边条（不是最小化）
-- 鼠标移到屏幕右边缘自动弹出；移开自动收起
+- 收起后在屏幕右侧中部显示一个小标签（气泡），不是最小化
+- 鼠标悬停标签约 0.3 秒自动弹出；移开自动收起
 - 托盘菜单；全局快捷键默认不注册（可用 `WORKBENCH_HOTKEY` 自行开启）
 - 托盘可切换「永久置顶」
 - 启动时检查本地服务，未运行则尝试通过 `scripts/start-server.ps1` 启动

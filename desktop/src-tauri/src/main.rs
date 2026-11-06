@@ -9,8 +9,6 @@ use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 const DEFAULT_WIDTH: f64 = 420.0;
-/// How many logical pixels of the window remain visible at the right edge.
-const COLLAPSED_STRIP: f64 = 8.0;
 
 /// When true the dock never auto-collapses and stays top-most.
 static PINNED: AtomicBool = AtomicBool::new(false);
@@ -66,13 +64,74 @@ fn cursor_position() -> Option<(i32, i32)> {
     None
 }
 
+fn position_handle(handle: &WebviewWindow) {
+    if let Some((_left, top, right, bottom)) = work_area() {
+        if let Ok(size) = handle.outer_size() {
+            let y = top + ((bottom - top - size.height as i32) / 2).max(0);
+            let _ = handle.set_position(PhysicalPosition::new(
+                right - size.width as i32,
+                y,
+            ));
+        }
+    }
+}
+
+fn configure_handle(handle: &WebviewWindow) {
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::Graphics::Gdi::{CreateRoundRectRgn, SetWindowRgn};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+            WS_EX_TOOLWINDOW,
+        };
+        if let Ok(native) = handle.hwnd() {
+            let raw = native.0 as isize;
+            let hwnd = HWND(raw as *mut core::ffi::c_void);
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            let style = style
+                | WS_EX_NOACTIVATE.0 as i32
+                | WS_EX_TOOLWINDOW.0 as i32;
+            SetWindowLongW(hwnd, GWL_EXSTYLE, style);
+
+            // The native window has a minimum width on Windows; clip its hit
+            // area to the small right-edge tab so the transparent part does
+            // not block clicks in other applications.
+            if let Ok(size) = handle.outer_size() {
+                let scale = handle.scale_factor().unwrap_or(1.0);
+                let width = size.width as i32;
+                let height = size.height as i32;
+                if width > 0 && height > 0 {
+                    let tab_w = ((12.0 * scale).round() as i32).max(8);
+                    let tab_h = ((64.0 * scale).round() as i32).max(24);
+                    let left = width - tab_w;
+                    let top = (height - tab_h) / 2;
+                    let region = CreateRoundRectRgn(
+                        left,
+                        top,
+                        width + 1,
+                        top + tab_h + 1,
+                        16,
+                        16,
+                    );
+                    SetWindowRgn(hwnd, Some(region), true);
+                }
+            }
+        }
+    }
+}
+
 fn expand(window: &WebviewWindow, focus: bool) {
+    if let Some(handle) = window.app_handle().get_webview_window("handle") {
+        let _ = handle.hide();
+    }
     if let Some((_left, top, right, _bottom)) = work_area() {
         if let Ok(outer) = window.outer_size() {
             let x = right - outer.width as i32;
             let _ = window.set_position(PhysicalPosition::new(x, top));
         }
     }
+    let _ = window.show();
     let _ = window.set_always_on_top(true);
     EXPANDED.store(true, Ordering::Relaxed);
     if focus {
@@ -84,13 +143,13 @@ fn collapse(window: &WebviewWindow) {
     if PINNED.load(Ordering::Relaxed) {
         return;
     }
-    if let Some((_left, top, right, _bottom)) = work_area() {
-        let scale = window.scale_factor().unwrap_or(1.0);
-        let strip = (COLLAPSED_STRIP * scale).round() as i32;
-        let _ = window.set_position(PhysicalPosition::new(right - strip, top));
+    let _ = window.hide();
+    if let Some(handle) = window.app_handle().get_webview_window("handle") {
+        configure_handle(&handle);
+        position_handle(&handle);
+        let _ = handle.show();
+        let _ = handle.set_always_on_top(true);
     }
-    // Keep the thin strip above other windows so the right-edge hot zone works.
-    let _ = window.set_always_on_top(true);
     EXPANDED.store(false, Ordering::Relaxed);
 }
 
@@ -104,28 +163,37 @@ fn toggle_window(app: &tauri::AppHandle, focus: bool) {
     }
 }
 
-fn start_edge_watcher(window: WebviewWindow) {
+fn start_edge_watcher(window: WebviewWindow, handle: WebviewWindow) {
     std::thread::spawn(move || {
+        let mut hover_ticks = 0;
         let mut outside_ticks = 0;
         loop {
             std::thread::sleep(Duration::from_millis(120));
-            let Some((_left, _top, right, bottom)) = work_area() else {
-                continue;
-            };
             let Some((x, y)) = cursor_position() else {
                 continue;
             };
-            let at_edge = x >= right - 3 && y < bottom;
             let expanded = EXPANDED.load(Ordering::Relaxed);
 
-            if at_edge && !expanded {
-                expand(&window, false);
-                outside_ticks = 0;
-                continue;
-            }
-
-            if expanded
-                && !PINNED.load(Ordering::Relaxed)
+            if !expanded {
+                if let Some((_left, top, right, bottom)) = work_area() {
+                    let scale = handle.scale_factor().unwrap_or(1.0);
+                    let tab_w = (12.0 * scale).round() as i32 + 6;
+                    let tab_h = (64.0 * scale).round() as i32 + 12;
+                    let center_y = top + (bottom - top) / 2;
+                    let inside = x >= right - tab_w
+                        && y >= center_y - tab_h / 2
+                        && y <= center_y + tab_h / 2;
+                    if inside {
+                        hover_ticks += 1;
+                        if hover_ticks >= 3 {
+                            expand(&window, false);
+                            hover_ticks = 0;
+                        }
+                    } else {
+                        hover_ticks = 0;
+                    }
+                }
+            } else if !PINNED.load(Ordering::Relaxed)
                 && !window.is_focused().unwrap_or(false)
             {
                 if let Ok(position) = window.outer_position() {
@@ -140,6 +208,7 @@ fn start_edge_watcher(window: WebviewWindow) {
                     }
                 }
             } else {
+                hover_ticks = 0;
                 outside_ticks = 0;
             }
         }
@@ -374,7 +443,14 @@ fn main() {
                 _ => {}
             });
 
-            start_edge_watcher(window.clone());
+            let handle = app
+                .get_webview_window("handle")
+                .expect("handle window");
+            configure_handle(&handle);
+            position_handle(&handle);
+            let _ = handle.hide();
+
+            start_edge_watcher(window.clone(), handle.clone());
             std::thread::spawn(ensure_server);
             Ok(())
         })

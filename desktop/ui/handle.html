@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>任务管理工作台</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: transparent;
+        overflow: hidden;
+        user-select: none;
+      }
+      .tab {
+        position: absolute;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 12px;
+        height: 64px;
+        border-radius: 8px 0 0 8px;
+        background: linear-gradient(180deg, #34476d, #1a2438);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-right: none;
+        box-shadow: -2px 0 10px rgba(0, 0, 0, 0.35);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+      }
+      .grip {
+        width: 3px;
+        height: 26px;
+        border-radius: 2px;
+        background: rgba(230, 236, 247, 0.55);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="tab"><span class="grip"></span></div>
+  </body>
+</html>

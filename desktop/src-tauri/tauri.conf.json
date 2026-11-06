@@ -20,6 +20,20 @@
         "decorations": true,
         "alwaysOnTop": true,
         "visible": false
+      },
+      {
+        "label": "handle",
+        "title": "任务管理工作台",
+        "url": "handle.html",
+        "width": 18,
+        "height": 88,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "shadow": false,
+        "visible": false
       }
     ],
     "security": {
