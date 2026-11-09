@@ -263,20 +263,37 @@ def link_unlinked_segments(db: Session, *, limit: int = 100) -> dict[str, int]:
             linked += 1
             continue
         text = segment_text(db, segment)
+        previous_task_id = db.scalar(
+            select(Segment.task_id)
+            .where(
+                Segment.session_id == segment.session_id,
+                Segment.id < segment.id,
+                Segment.task_id.is_not(None),
+            )
+            .order_by(Segment.id.desc())
+            .limit(1)
+        )
         scored = sorted(
-            ((similarity(text[:3000], task.title), task) for task in tasks),
+            (
+                (
+                    similarity(text[:3000], task.title)
+                    + (8 if task.id == previous_task_id else 0),
+                    task,
+                )
+                for task in tasks
+            ),
             key=lambda pair: pair[0],
             reverse=True,
         )
         best_score, best_task = scored[0]
         margin = best_score - (scored[1][0] if len(scored) > 1 else 0)
-        if best_score >= 65 and margin >= 8:
+        if best_score >= 55 and margin >= 5:
             link_segment(
                 db,
                 segment,
                 best_task,
                 method="similarity",
-                confidence=best_score / 100,
+                confidence=min(best_score, 100) / 100,
             )
             linked += 1
         else:

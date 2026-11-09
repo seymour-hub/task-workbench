@@ -125,7 +125,9 @@ def _mark_segment_linked(db: Session, task: Task, session_id: str, message_id: i
     apply_pending_inbox_to_task(db, task, segment.id)
 
 
-def _create_task_from_start(db: Session, confirmation: PendingConfirmation) -> Task:
+def _create_task_from_start(
+    db: Session, confirmation: PendingConfirmation, *, notify: bool = True
+) -> Task:
     payload = confirmation.payload or {}
     title = str(payload.get("title") or "未命名任务").strip()[:300]
     me = db.scalar(select(Member).where(Member.is_me.is_(True)).limit(1))
@@ -212,12 +214,13 @@ def _create_task_from_start(db: Session, confirmation: PendingConfirmation) -> T
         )
     )
     db.flush()
-    send_text(
-        db,
-        f"✅ 已加入工作台\n{task.code}《{task.title}》\n后续进展会自动累积到这个任务。",
-        kind="task_confirm",
-        title="任务已加入",
-    )
+    if notify:
+        send_text(
+            db,
+            f"✅ 已加入工作台\n{task.code}《{task.title}》\n后续进展会自动累积到这个任务。",
+            kind="task_confirm",
+            title="任务已加入",
+        )
     return task
 
 
@@ -260,7 +263,13 @@ def _mark_final_versions(db: Session, task: Task, hint: str) -> int:
     return marked
 
 
-def _complete_task(db: Session, confirmation: PendingConfirmation, hint: str) -> Task:
+def _complete_task(
+    db: Session,
+    confirmation: PendingConfirmation,
+    hint: str,
+    *,
+    notify: bool = True,
+) -> Task:
     payload = confirmation.payload or {}
     task = db.get(Task, int(payload.get("task_id") or 0))
     if not task:
@@ -291,13 +300,14 @@ def _complete_task(db: Session, confirmation: PendingConfirmation, hint: str) ->
     )
     marked = _mark_final_versions(db, task, hint)
     db.flush()
-    send_text(
-        db,
-        f"✅ 已完成《{task.title}》\n结束时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(ended_at))}\n"
-        f"已标记 {marked} 个最终版文件。",
-        kind="task_confirm",
-        title="任务已完成",
-    )
+    if notify:
+        send_text(
+            db,
+            f"✅ 已完成《{task.title}》\n结束时间：{time.strftime('%Y-%m-%d %H:%M', time.localtime(ended_at))}\n"
+            f"已标记 {marked} 个最终版文件。",
+            kind="task_confirm",
+            title="任务已完成",
+        )
     return task
 
 
@@ -453,12 +463,9 @@ def scan_replies(
             code = code_match.group(1).upper()
             target = next((item for item in same_chat if item.code == code), None)
             if target is None:
-                send_text(
-                    db,
-                    f"编号 #{code} 不存在或已过期，请重新确认。",
-                    kind="task_confirm",
-                    title="确认编号无效",
-                )
+                # Stay silent: old codes are common when the agent quotes the
+                # conversation, and replying would fill Feishu with noise.
+                logger.info("ignore stale confirmation code #%s", code)
                 continue
             decision = _decision_of(text, target.kind) or "yes"
         elif len(same_chat) == 1 and _decision_of(text, same_chat[0].kind):
@@ -476,13 +483,7 @@ def scan_replies(
                 target = matches[0]
                 decision = _decision_of(text, target.kind)
             if target is None:
-                codes = "、".join(f"#{item.code}" for item in same_chat[:5])
-                send_text(
-                    db,
-                    f"当前有多条待确认，请带编号回复：{codes}",
-                    kind="task_confirm",
-                    title="待确认任务",
-                )
+                logger.info("ambiguous reply with %d pending confirmations", len(same_chat))
                 continue
         target_id = target.id
         try:

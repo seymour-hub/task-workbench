@@ -11,7 +11,7 @@ from sqlalchemy import select
 from ..ai.extractor import extract_pending, pending_segment_count
 from ..db import get_bool_setting, get_int_setting, get_setting, session_scope
 from ..ingest.sync_service import sync_now
-from ..models import DeliverableRoot
+from ..models import DeliverableRoot, InboxItem
 from .file_service import scan_root
 from .notify_service import (
     send_digest,
@@ -58,6 +58,29 @@ def _extract_job() -> None:
         result = extract_pending(db, limit=3)
         if result.get("processed") or result.get("failed"):
             logger.info("extract: %s", result)
+
+
+def _inbox_cleanup_job() -> None:
+    """Archive stale candidates so the inbox stays small and useful."""
+    with session_scope() as db:
+        cutoff = time.time() - 7 * 86_400
+        items = list(
+            db.scalars(
+                select(InboxItem).where(
+                    InboxItem.status == "pending",
+                    InboxItem.created_at < cutoff,
+                )
+            )
+        )
+        for item in items:
+            item.status = "rejected"
+            item.reviewed_at = time.time()
+            item.payload = {
+                **(item.payload or {}),
+                "reject_reason": "过期归档：7 天未处理且未关联任务",
+            }
+        if items:
+            logger.info("inbox cleanup: archived %d stale items", len(items))
 
 
 def _file_scan_job() -> None:
@@ -139,6 +162,13 @@ def start_scheduler() -> BackgroundScheduler:
         _file_scan_job,
         IntervalTrigger(minutes=5),
         id="file_scan",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _inbox_cleanup_job,
+        IntervalTrigger(hours=1),
+        id="inbox_cleanup",
         max_instances=1,
         coalesce=True,
     )

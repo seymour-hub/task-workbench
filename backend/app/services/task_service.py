@@ -233,6 +233,7 @@ def create_task(
         task.progress = 100
     db.add(task)
     db.flush()
+    task.code = f"T{task.id:04d}"
     db.add(
         TaskEvent(
             task_id=task.id,

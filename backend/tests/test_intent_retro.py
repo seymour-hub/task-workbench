@@ -73,3 +73,41 @@ def test_agent_marker_creates_confirmation(db, monkeypatch):
     confirmation = db.query(PendingConfirmation).one()
     assert confirmation.kind == "start_task"
     assert confirmation.payload["title"] == "产品A 方案优化"
+
+
+def test_multiple_agent_markers_create_tasks_without_questions(db, monkeypatch):
+    from app.models import Task
+
+    db.add(SyncState(key="agent_marker_cursor.message_id", value="0"))
+    db.add(SessionCache(id="session-multi", source="feishu", chat_id="oc_test"))
+    db.add(
+        MessageCache(
+            hermes_message_id=2001,
+            session_id="session-multi",
+            role="assistant",
+            content="1️⃣ 撰写年度总结报告\n2️⃣ 客户拜访与需求沟通\n[[WB_ADD: 撰写年度总结报告]]\n[[WB_ADD: 客户拜访与需求沟通]]",
+            content_hash="hash-multi",
+            timestamp=time.time(),
+        )
+    )
+    db.commit()
+    calls: list[str] = []
+    monkeypatch.setattr(
+        intent_service,
+        "send_text",
+        lambda *args, **kwargs: calls.append(args[1]) or {"ok": True},
+    )
+
+    result = intent_service.scan_agent_markers(db)
+
+    assert result["starts"] == 2
+    tasks = list(db.query(Task).order_by(Task.id))
+    assert [task.title for task in tasks] == ["撰写年度总结报告", "客户拜访与需求沟通"]
+    assert all(task.code for task in tasks)
+    assert (
+        db.query(PendingConfirmation)
+        .filter(PendingConfirmation.status == "pending")
+        .count()
+        == 0
+    )
+    assert len(calls) == 1

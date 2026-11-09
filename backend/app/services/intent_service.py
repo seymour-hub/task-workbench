@@ -601,40 +601,35 @@ def scan_intents(
             if best_score < 50 and len(active) > 1:
                 mark(message.hermes_message_id, "complete_skipped")
                 continue
-            if any(
-                int((item.payload or {}).get("task_id") or 0) == best_task.id
-                for item in pending_completes
-            ):
-                mark(message.hermes_message_id, "complete_duplicate_pending")
-                continue
-            confirmation = create_confirmation(
-                db,
-                "complete_task",
-                {
-                    "task_id": best_task.id,
-                    "title": best_task.title,
-                    "chat_id": chat_id,
-                    "message_ids": [message.hermes_message_id],
-                    "completed_at": message.timestamp or time.time(),
-                    "source_excerpt": text[:500],
-                    "candidate_task_ids": [task.id for _score, task in scored[:3]],
-                    "confidence": confidence,
-                },
-                _complete_question(best_task.title),
+            payload = {
+                "task_id": best_task.id,
+                "title": best_task.title,
+                "chat_id": chat_id,
+                "message_ids": [message.hermes_message_id],
+                "completed_at": message.timestamp or time.time(),
+                "source_excerpt": text[:500],
+                "candidate_task_ids": [task.id for _score, task in scored[:3]],
+                "confidence": confidence,
+            }
+            confirmation = PendingConfirmation(
+                code=_new_code(db),
+                kind="complete_task",
+                payload=payload,
+                status="confirmed",
+                created_at=time.time(),
+                expires_at=time.time() + 86_400,
             )
+            db.add(confirmation)
+            db.flush()
+            from .confirmation_service import _complete_task
+
+            task = _complete_task(db, confirmation, text, notify=True)
+            confirmation.resolved_at = time.time()
+            confirmation.reply_text = text[:500]
+            confirmation.payload = {**payload, "task_id": task.id}
             mark(message.hermes_message_id, "complete_task")
             if message.content_hash:
                 processed_hashes.add(message.content_hash)
-            pending_completes.append(confirmation)
-            questions.append(
-                {
-                    "code": confirmation.code,
-                    "kind": "complete_task",
-                    "title": best_task.title,
-                    "sent": bool((confirmation.payload or {}).get("question_sent")),
-                    "error": (confirmation.payload or {}).get("question_error"),
-                }
-            )
             completes += 1
             continue
 
@@ -649,6 +644,23 @@ def scan_intents(
         "completes": completes,
         "questions": questions,
     }
+
+
+def _marker_section(text: str, title: str) -> str:
+    """Pick the numbered section of an assistant reply that matches a marker."""
+    parts = re.split(r"(?m)^\s*\*\*[1-9]️⃣\s*", text or "")
+    best = ""
+    best_score = -1.0
+    for part in parts:
+        score = similarity(part[:600], title)
+        if score > best_score:
+            best_score = score
+            best = part
+    if best and best_score >= 30:
+        cleaned = re.sub(r"^\s*\*{0,2}[1-9]️⃣\s*", "", best)
+        cleaned = cleaned.replace("**", "").strip()
+        return (cleaned or best.strip())[:1000]
+    return (text or "")[:1000]
 
 
 def scan_agent_markers(
@@ -728,11 +740,14 @@ def scan_agent_markers(
     )
 
     starts = completes = 0
-    questions: list[dict[str, Any]] = []
+    created: list[dict[str, Any]] = []
+    finished: list[dict[str, Any]] = []
     max_seen = cursor
 
     def mark(message_id: int, value: str) -> None:
         db.add(ProcessedIntent(message_id=message_id, intent=value))
+
+    from .confirmation_service import _complete_task, _create_task_from_start
 
     for message in messages:
         max_seen = max(max_seen, message.hermes_message_id)
@@ -746,50 +761,58 @@ def scan_agent_markers(
 
         chat_id = chat_id_for_session(db, message.session_id)
         active = active_tasks_for_chat(db, chat_id)
+        previous = db.scalar(
+            select(MessageCache)
+            .where(
+                MessageCache.session_id == message.session_id,
+                MessageCache.role == "user",
+                MessageCache.hermes_message_id < message.hermes_message_id,
+            )
+            .order_by(MessageCache.hermes_message_id.desc())
+            .limit(1)
+        )
+        message_ids = (
+            [previous.hermes_message_id, message.hermes_message_id]
+            if previous
+            else [message.hermes_message_id]
+        )
+
         for kind, title in markers:
             if kind in {"START", "ADD"}:
                 if any(similarity(title, task.title) >= 75 for task in active):
                     continue
-                if any(
-                    (item.payload or {}).get("chat_id") == chat_id
-                    and similarity(
-                        title, (item.payload or {}).get("title") or ""
-                    )
-                    >= 75
-                    for item in pending_starts
-                ):
-                    continue
-                confirmation = create_confirmation(
-                    db,
-                    "start_task",
-                    {
-                        "title": title,
-                        "chat_id": chat_id,
-                        "session_id": message.session_id,
-                        "message_ids": [message.hermes_message_id],
-                        "started_at": message.timestamp or time.time(),
-                        "source_excerpt": (message.content or "")[:500],
-                        "confidence": 0.95,
-                        "agent_marker": kind,
-                    },
-                    _start_question(title),
+                excerpt = _marker_section(message.content or "", title)
+                payload = {
+                    "title": title,
+                    "chat_id": chat_id,
+                    "session_id": message.session_id,
+                    "message_ids": message_ids,
+                    "started_at": message.timestamp or time.time(),
+                    "source_excerpt": excerpt or (message.content or "")[:1000],
+                    "confidence": 0.95,
+                    "agent_marker": kind,
+                }
+                confirmation = PendingConfirmation(
+                    code=_new_code(db),
+                    kind="start_task",
+                    payload=payload,
+                    status="confirmed",
+                    created_at=time.time(),
+                    expires_at=time.time() + 86_400,
                 )
-                pending_starts.append(confirmation)
+                db.add(confirmation)
+                db.flush()
+                task = _create_task_from_start(db, confirmation, notify=False)
+                confirmation.resolved_at = time.time()
+                confirmation.reply_text = "auto (agent marker)"
+                confirmation.payload = {
+                    **payload,
+                    "task_id": task.id,
+                    "code": task.code,
+                }
+                active.append(task)
                 starts += 1
-                questions.append(
-                    {
-                        "code": confirmation.code,
-                        "kind": "start_task",
-                        "title": title,
-                        "sent": bool(
-                            (confirmation.payload or {}).get("question_sent")
-                        ),
-                        "error": (confirmation.payload or {}).get(
-                            "question_error"
-                        ),
-                        "agent_marker": True,
-                    }
-                )
+                created.append({"code": task.code, "title": task.title})
             elif kind == "DONE":
                 scored = sorted(
                     ((similarity(title, task.title), task) for task in active),
@@ -799,42 +822,54 @@ def scan_agent_markers(
                 if not scored or scored[0][0] < 50:
                     continue
                 best_task = scored[0][1]
-                if any(
-                    int((item.payload or {}).get("task_id") or 0) == best_task.id
-                    for item in pending_completes
-                ):
-                    continue
-                confirmation = create_confirmation(
+                payload = {
+                    "task_id": best_task.id,
+                    "title": best_task.title,
+                    "chat_id": chat_id,
+                    "message_ids": message_ids,
+                    "completed_at": message.timestamp or time.time(),
+                    "source_excerpt": (message.content or "")[:1000],
+                    "confidence": 0.95,
+                    "agent_marker": "DONE",
+                }
+                confirmation = PendingConfirmation(
+                    code=_new_code(db),
+                    kind="complete_task",
+                    payload=payload,
+                    status="confirmed",
+                    created_at=time.time(),
+                    expires_at=time.time() + 86_400,
+                )
+                db.add(confirmation)
+                db.flush()
+                task = _complete_task(
                     db,
-                    "complete_task",
-                    {
-                        "task_id": best_task.id,
-                        "title": best_task.title,
-                        "chat_id": chat_id,
-                        "message_ids": [message.hermes_message_id],
-                        "completed_at": message.timestamp or time.time(),
-                        "source_excerpt": (message.content or "")[:500],
-                        "confidence": 0.95,
-                        "agent_marker": "DONE",
-                    },
-                    _complete_question(best_task.title),
+                    confirmation,
+                    message.content or "",
+                    notify=False,
                 )
-                pending_completes.append(confirmation)
+                confirmation.resolved_at = time.time()
+                confirmation.reply_text = "auto (agent marker)"
+                confirmation.payload = {
+                    **payload,
+                    "task_id": task.id,
+                    "code": task.code,
+                }
                 completes += 1
-                questions.append(
-                    {
-                        "code": confirmation.code,
-                        "kind": "complete_task",
-                        "title": best_task.title,
-                        "sent": bool(
-                            (confirmation.payload or {}).get("question_sent")
-                        ),
-                        "error": (confirmation.payload or {}).get(
-                            "question_error"
-                        ),
-                        "agent_marker": True,
-                    }
-                )
+                finished.append({"code": task.code, "title": task.title})
+
+        if created or finished:
+            lines = ["✅ 工作台已同步"]
+            for item in created:
+                lines.append(f"新增 {item['code']}《{item['title']}》")
+            for item in finished:
+                lines.append(f"完成 {item['code']}《{item['title']}》")
+            send_text(
+                db,
+                "\\n".join(lines),
+                kind="task_confirm",
+                title="任务已同步",
+            )
 
         mark(message.hermes_message_id, "agent_marker")
         if message.content_hash:
@@ -847,5 +882,5 @@ def scan_agent_markers(
         "checked": len(messages),
         "starts": starts,
         "completes": completes,
-        "questions": questions,
+        "questions": [],
     }

@@ -29,14 +29,16 @@ SYSTEM_PROMPT = """你是一个工作日志结构化助手。你的输入是一�
    - confidence：0~1，表示这是否是一个真实任务。
    - evidence_message_ids：必须来自给定的消息编号，至少 1 个。
 2. issues：对话中遇到的阻塞、风险、待确认问题、返工原因。severity: "blocker"|"high"|"medium"|"low"。
+   - 每个片段最多 3 条，只保留真正影响交付的问题；同义问题合并，不逐条罗列。
 3. deliverables（只收最终给人看的结果）：
    - 只包含用户最终要打开、评审或发布的结果：成片视频、交互 HTML、PDF/PNG/PPT/Word/Excel、最终文档、最终压缩包。
    - 排除：脚本（.py/.js/.sh/.bat/.ps1）、配置文件、日志、缓存、scratch/temp/build 目录、中间音频、素材、样片/草稿/预览。
    - 同一逻辑输出有多个版本时，用相同的 group 名称；version 写版本号或日期；只有最终采用的版本 is_final=true；样片/草稿 is_final=false。
    - 路径必须来自对话原文，不要编造。type: "file"|"doc"|"link"|"image"|"video"|"other"。
-4. decisions：已做出的关键决定，一句话。
-5. next_steps：尚未形成正式任务的后续动作，一句话。
+4. decisions：已做出的关键决定，一句话；每个片段最多 3 条。
+5. next_steps：尚未形成正式任务的后续动作，一句话；每个片段最多 3 条。
 6. milestones：本片段中的 1-3 个关键节点（开始、阶段完成、重要决策、交付、验收等），一句话；没有就返回空数组。
+7. 控制总量：notes/decisions/next_steps 不要逐条抄录对话，只保留对后续有用的结论。
 
 输出 JSON 结构：
 {

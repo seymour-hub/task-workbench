@@ -95,6 +95,9 @@ export default function TaskCard({
       </div>
 
       <div className="mt-3 flex items-center gap-2 border-t border-ink-700/50 pt-2.5">
+        {task.code ? (
+          <span className="text-[10px] text-mist-500">{task.code}</span>
+        ) : null}
         {task.issue_count ? (
           <span className="flex items-center gap-1 text-[10.5px] text-amber-300/80">
             <MessageSquareWarning size={12} /> {task.issue_count}

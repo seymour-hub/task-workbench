@@ -328,6 +328,11 @@ export default function TasksPage() {
                       className="h-2 w-2 shrink-0 rounded-full"
                       style={{ background: task.overdue ? "#EF4444" : "#5B7CFA" }}
                     />
+                    {task.code ? (
+                      <span className="shrink-0 text-[10px] font-medium text-mist-500">
+                        {task.code}
+                      </span>
+                    ) : null}
                     <span
                       className="line-clamp-2 min-w-0 flex-1 text-[13px] leading-5 text-mist-200"
                       title={task.title}
@@ -399,6 +404,9 @@ function TaskRow({
         </button>
       </td>
       <td className="max-w-[380px] py-2.5">
+        {task.code ? (
+          <span className="text-[10px] font-medium text-mist-500">{task.code}</span>
+        ) : null}
         <p
           className={cn(
             "truncate text-mist-100",
