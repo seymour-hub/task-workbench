@@ -35,3 +35,14 @@ def test_create_task_makes_output_folder(db, tmp_path):
 
     folder = tmp_path / "documents" / f"{task.code}-新建文件夹测试"
     assert folder.is_dir()
+
+
+def test_deleted_codes_are_not_reused(db):
+    import time
+
+    first = create_task(db, TaskCreate(title="会被删除的任务"))
+    db.commit()
+    first.deleted_at = time.time()
+    db.commit()
+
+    assert next_task_code(db) == "T0002"

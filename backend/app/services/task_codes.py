@@ -9,9 +9,13 @@ from ..models import Task
 
 
 def next_task_code(db: Session) -> str:
-    """Return the next free code after the highest active task code."""
+    """Return the next code after every code ever issued.
+
+    Deleted tasks keep their code so Hermes' task ledger never sees the same
+    number reused for a different task.
+    """
     highest = 0
-    for code in db.scalars(select(Task.code).where(Task.deleted_at.is_(None))):
+    for code in db.scalars(select(Task.code)):
         if not code or not code.startswith("T"):
             continue
         try:

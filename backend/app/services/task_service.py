@@ -487,7 +487,6 @@ def merge_tasks(
             moved_deliverables += 1
         source.deleted_at = time.time()
         source.status = "cancelled"
-        source.code = None
 
     db.flush()
 
