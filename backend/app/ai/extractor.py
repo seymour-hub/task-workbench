@@ -393,6 +393,11 @@ def extract_segment(db: Session, segment: Segment, *, force: bool = False) -> di
             is_exact = bool(task_id) and normalize_title(title) == normalize_title(
                 db.get(Task, task_id).title if task_id else ""
             )
+            # The segment already belongs to a task: this is an existing
+            # workstream, not a new task candidate.
+            linked_task_id = segment.task_id
+            if linked_task_id and not task_id:
+                task_id = linked_task_id
             payload = {
                 "title": title,
                 "description": task.description or "",
@@ -405,14 +410,14 @@ def extract_segment(db: Session, segment: Segment, *, force: bool = False) -> di
                 "evidence_message_ids": task.evidence_message_ids,
                 "segment_id": segment.id,
                 "dedup_score": round(score, 1),
-                "possible_duplicate": bool(task_id or inbox_id),
+                "possible_duplicate": bool(task_id or inbox_id or linked_task_id),
             }
             db.add(
                 InboxItem(
                     kind="task",
                     payload=payload,
                     confidence=task.confidence,
-                    status="duplicate" if is_exact else "pending",
+                    status="duplicate" if (is_exact or linked_task_id) else "pending",
                     segment_id=segment.id,
                     source_message_ids=task.evidence_message_ids,
                     dedup_of_task_id=task_id,

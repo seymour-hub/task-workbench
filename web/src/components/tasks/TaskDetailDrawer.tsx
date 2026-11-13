@@ -338,7 +338,7 @@ export default function TaskDetailDrawer({
               <PriorityBadge priority={task.priority} />
               {task.code ? (
                 <span className="pill border border-ink-700 bg-ink-800 text-mist-300">
-                  #{task.code}
+                  {task.code}
                 </span>
               ) : null}
               {task.project_name ? (

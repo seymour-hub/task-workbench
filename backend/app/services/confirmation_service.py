@@ -23,6 +23,8 @@ from ..models import (
     TaskEvent,
 )
 from .notify_service import send_text
+from .task_codes import next_task_code
+from .task_folders import ensure_task_folder
 from .task_link_service import (
     apply_pending_inbox_to_task,
     chat_id_for_session,
@@ -130,6 +132,44 @@ def _create_task_from_start(
 ) -> Task:
     payload = confirmation.payload or {}
     title = str(payload.get("title") or "未命名任务").strip()[:300]
+
+    # Exact duplicate of an existing task (including finished ones): reuse it
+    # instead of creating a second task with the same name.
+    duplicate = db.scalar(
+        select(Task)
+        .where(
+            Task.deleted_at.is_(None),
+            Task.fingerprint == normalize_title(title),
+        )
+        .order_by(Task.id)
+        .limit(1)
+    )
+    if duplicate:
+        message_ids = payload.get("message_ids") or []
+        duplicate.source_message_ids = list(
+            dict.fromkeys((duplicate.source_message_ids or []) + message_ids)
+        )
+        if not duplicate.source_excerpt and payload.get("source_excerpt"):
+            duplicate.source_excerpt = payload.get("source_excerpt")
+        db.add(
+            TaskEvent(
+                task_id=duplicate.id,
+                type="note",
+                note="重复的开始标记，已合并到本任务",
+                actor="ai",
+            )
+        )
+        for message_id in message_ids:
+            _mark_segment_linked(
+                db, duplicate, str(payload.get("session_id") or ""), int(message_id)
+            )
+        db.flush()
+        folder = ensure_task_folder(db, duplicate)
+        if folder:
+            setattr(duplicate, "_folder", str(folder))
+        setattr(duplicate, "_reused", True)
+        return duplicate
+
     me = db.scalar(select(Member).where(Member.is_me.is_(True)).limit(1))
     other = db.scalar(select(Project).where(Project.name == "其他"))
     task = Task(
@@ -154,7 +194,10 @@ def _create_task_from_start(
     )
     db.add(task)
     db.flush()
-    task.code = f"T{task.id:04d}"
+    task.code = next_task_code(db)
+    folder = ensure_task_folder(db, task)
+    if folder:
+        setattr(task, "_folder", str(folder))
     db.add(
         TaskEvent(
             task_id=task.id,
@@ -215,9 +258,10 @@ def _create_task_from_start(
     )
     db.flush()
     if notify:
+        folder_line = f"\n📁 {getattr(task, '_folder', '')}" if getattr(task, "_folder", "") else ""
         send_text(
             db,
-            f"✅ 已加入工作台\n{task.code}《{task.title}》\n后续进展会自动累积到这个任务。",
+            f"✅ 已加入工作台\n{task.code}《{task.title}》{folder_line}\n后续进展会自动累积到这个任务。",
             kind="task_confirm",
             title="任务已加入",
         )

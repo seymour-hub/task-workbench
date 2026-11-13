@@ -13,7 +13,7 @@ from .. import config
 from ..ai.client import AIError, chat_json
 from ..ai.deduper import similarity
 from ..db import get_setting
-from ..ingest.normalizer import unwrap_user_text
+from ..ingest.normalizer import is_context_compaction, unwrap_user_text
 from ..models import (
     MessageCache,
     PendingConfirmation,
@@ -21,9 +21,11 @@ from ..models import (
     SessionCache,
     SyncState,
     Task,
+    TaskEvent,
 )
 from .notify_service import send_text
 from .task_link_service import active_tasks_for_chat, chat_id_for_session
+from .task_restart import find_restart_code, restart_task
 
 logger = logging.getLogger(__name__)
 
@@ -460,7 +462,7 @@ def scan_intents(
     )
 
     classified = classify_messages(db, messages)
-    starts = completes = 0
+    starts = completes = restarts = 0
     questions: list[dict[str, Any]] = []
     max_seen = cursor
 
@@ -474,7 +476,54 @@ def scan_intents(
         )
         chat_id = chat_id_for_session(db, message.session_id)
         active = active_tasks_for_chat(db, chat_id)
+        if is_context_compaction(message.content):
+            mark(message.hermes_message_id, "compaction_reference")
+            continue
         text = unwrap_user_text(message.content)
+
+        restart_code = find_restart_code(text)
+        if restart_code:
+            restarted = db.scalar(
+                select(Task).where(
+                    Task.code == restart_code,
+                    Task.deleted_at.is_(None),
+                )
+            )
+            if restarted:
+                recent_restart = db.scalar(
+                    select(TaskEvent).where(
+                        TaskEvent.task_id == restarted.id,
+                        TaskEvent.type == "restarted",
+                        TaskEvent.created_at >= time.time() - 600,
+                    )
+                )
+                if restarted.status == "in_progress" and recent_restart:
+                    mark(message.hermes_message_id, "restart_recent")
+                    continue
+                restart_task(
+                    db,
+                    restarted,
+                    note=f"用户要求重启：{text[:120]}",
+                    actor="me",
+                    created_at=message.timestamp or time.time(),
+                )
+                from .confirmation_service import _mark_segment_linked
+
+                _mark_segment_linked(
+                    db, restarted, message.session_id, message.hermes_message_id
+                )
+                mark(message.hermes_message_id, "restart_task")
+                if message.content_hash:
+                    processed_hashes.add(message.content_hash)
+                restarts += 1
+                send_text(
+                    db,
+                    f"🔄 已重启 {restarted.code}《{restarted.title}》\n"
+                    "继续在原任务上累积进展和交付物。",
+                    kind="task_confirm",
+                    title="任务已重启",
+                )
+                continue
 
         if is_retro_add(text):
             if message.content_hash and message.content_hash in processed_hashes:
@@ -547,6 +596,15 @@ def scan_intents(
                 continue
             if any(similarity(title, task.title) >= 75 for task in active):
                 mark(message.hermes_message_id, "start_skipped")
+                continue
+            recent_tasks = db.scalars(
+                select(Task).where(
+                    Task.deleted_at.is_(None),
+                    Task.started_at >= time.time() - 86_400,
+                )
+            )
+            if any(similarity(title, task.title) >= 75 for task in recent_tasks):
+                mark(message.hermes_message_id, "start_skipped_recent")
                 continue
             if any(
                 (item.payload or {}).get("chat_id") == chat_id
@@ -739,7 +797,7 @@ def scan_agent_markers(
         )
     )
 
-    starts = completes = 0
+    starts = completes = reused = restarts = 0
     created: list[dict[str, Any]] = []
     finished: list[dict[str, Any]] = []
     max_seen = cursor
@@ -751,6 +809,9 @@ def scan_agent_markers(
 
     for message in messages:
         max_seen = max(max_seen, message.hermes_message_id)
+        if is_context_compaction(message.content):
+            mark(message.hermes_message_id, "compaction_reference")
+            continue
         markers = parse_agent_markers(message.content or "")
         if not markers:
             mark(message.hermes_message_id, "agent_none")
@@ -779,6 +840,34 @@ def scan_agent_markers(
 
         for kind, title in markers:
             if kind in {"START", "ADD"}:
+                restart_code = find_restart_code(title)
+                if restart_code:
+                    restarted = db.scalar(
+                        select(Task).where(
+                            Task.code == restart_code,
+                            Task.deleted_at.is_(None),
+                        )
+                    )
+                    if restarted:
+                        restart_task(
+                            db,
+                            restarted,
+                            note=f"任务标记重启：{title[:120]}",
+                            actor="ai",
+                            created_at=message.timestamp or time.time(),
+                        )
+                        from .confirmation_service import _mark_segment_linked
+
+                        _mark_segment_linked(
+                            db,
+                            restarted,
+                            message.session_id,
+                            message.hermes_message_id,
+                        )
+                        if all(item.id != restarted.id for item in active):
+                            active.append(restarted)
+                        restarts += 1
+                        continue
                 if any(similarity(title, task.title) >= 75 for task in active):
                     continue
                 excerpt = _marker_section(message.content or "", title)
@@ -810,9 +899,30 @@ def scan_agent_markers(
                     "task_id": task.id,
                     "code": task.code,
                 }
+                # The marker already created the task; a pending question for
+                # the same work would only make the user confirm twice.
+                for item in pending_starts:
+                    if item.status != "pending":
+                        continue
+                    item_title = str((item.payload or {}).get("title") or "")
+                    if similarity(title, item_title) >= 75:
+                        item.status = "rejected"
+                        item.resolved_at = time.time()
+                        item.reply_text = "已由任务标记自动建单"
+                if getattr(task, "_reused", False):
+                    if all(item.id != task.id for item in active):
+                        active.append(task)
+                    reused += 1
+                    continue
                 active.append(task)
                 starts += 1
-                created.append({"code": task.code, "title": task.title})
+                created.append(
+                    {
+                        "code": task.code,
+                        "title": task.title,
+                        "folder": getattr(task, "_folder", ""),
+                    }
+                )
             elif kind == "DONE":
                 scored = sorted(
                     ((similarity(title, task.title), task) for task in active),
@@ -862,6 +972,8 @@ def scan_agent_markers(
             lines = ["✅ 工作台已同步"]
             for item in created:
                 lines.append(f"新增 {item['code']}《{item['title']}》")
+                if item.get("folder"):
+                    lines.append(f"📁 {item['folder']}")
             for item in finished:
                 lines.append(f"完成 {item['code']}《{item['title']}》")
             send_text(
@@ -882,5 +994,7 @@ def scan_agent_markers(
         "checked": len(messages),
         "starts": starts,
         "completes": completes,
+        "reused": reused,
+        "restarts": restarts,
         "questions": [],
     }

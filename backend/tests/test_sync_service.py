@@ -37,3 +37,27 @@ def test_sync_handles_missing_source(db, monkeypatch, tmp_path):
     result = sync_service.sync_now(db)
     assert result["ok"] is False
     assert "not found" in result["error"]
+
+
+def test_replayed_messages_are_dropped(db):
+    db.add(
+        MessageCache(
+            hermes_message_id=1,
+            session_id="session-x",
+            role="user",
+            content="同一段内容",
+            content_hash="hash-x",
+            timestamp=100.0,
+        )
+    )
+    db.commit()
+
+    payloads = [
+        {"session_id": "session-x", "role": "user", "content_hash": "hash-x", "timestamp": 100.0},
+        {"session_id": "session-x", "role": "user", "content_hash": "hash-x", "timestamp": 101.0},
+        {"session_id": "session-x", "role": "user", "content_hash": "hash-y", "timestamp": 100.0},
+    ]
+    kept = sync_service.drop_replayed_messages(db, payloads)
+
+    assert len(kept) == 2
+    assert [item["content_hash"] for item in kept] == ["hash-x", "hash-y"]

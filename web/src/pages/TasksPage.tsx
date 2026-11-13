@@ -189,7 +189,7 @@ export default function TasksPage() {
             <input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="筛选任务标题..."
+              placeholder="搜索标题或编号..."
               className="w-full bg-transparent text-[12px] text-mist-100 outline-none placeholder:text-mist-600"
             />
           </form>

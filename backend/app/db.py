@@ -217,13 +217,15 @@ def init_db() -> None:
         db.query(Task).filter(Task.auto_created.is_(None)).update(
             {"auto_created": False}, synchronize_session=False
         )
+        from .services.task_codes import next_task_code
+
         for task in db.scalars(
             select(Task).where(
                 Task.deleted_at.is_(None),
                 (Task.code.is_(None)) | (Task.code == ""),
             )
         ):
-            task.code = f"T{task.id:04d}"
+            task.code = next_task_code(db)
 
         if db.scalar(select(Project).limit(1)) is None:
             db.add(

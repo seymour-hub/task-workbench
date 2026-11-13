@@ -17,7 +17,10 @@ from ..models import (
     Task,
     TaskEvent,
 )
+from ..ai.deduper import normalize_title
 from ..schemas import TaskCreate, TaskUpdate
+from .task_codes import next_task_code
+from .task_folders import ensure_task_folder
 
 STATUS_LABELS = {
     "todo": "待处理",
@@ -156,7 +159,11 @@ def list_tasks(
     if q:
         like = f"%{q}%"
         statement = statement.where(
-            or_(Task.title.like(like), Task.description.like(like))
+            or_(
+                Task.title.like(like),
+                Task.description.like(like),
+                Task.code.like(like),
+            )
         )
 
     now = time.time()
@@ -222,6 +229,7 @@ def create_task(
         source_message_ids=source_message_ids,
         source_excerpt=source_excerpt,
         ai_confidence=ai_confidence,
+        fingerprint=normalize_title(data.title),
         category=data.category,
         subcategory=data.subcategory,
         work_types=data.work_types,
@@ -233,7 +241,10 @@ def create_task(
         task.progress = 100
     db.add(task)
     db.flush()
-    task.code = f"T{task.id:04d}"
+    task.code = next_task_code(db)
+    folder = ensure_task_folder(db, task)
+    if folder:
+        setattr(task, "_folder", str(folder))
     db.add(
         TaskEvent(
             task_id=task.id,
@@ -476,6 +487,7 @@ def merge_tasks(
             moved_deliverables += 1
         source.deleted_at = time.time()
         source.status = "cancelled"
+        source.code = None
 
     db.flush()
 

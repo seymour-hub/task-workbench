@@ -15,6 +15,52 @@ from .normalizer import normalize_message
 from .segmenter import rebuild_segments, reset_stale_running
 
 
+def drop_replayed_messages(db: Session, payloads: list[dict]) -> list[dict]:
+    """Skip messages Hermes re-emits after context compaction.
+
+    Replays keep the original timestamp and content but get a new message id.
+    Treat same session + role + content_hash + timestamp as the same message.
+    """
+    def key(item: dict) -> tuple:
+        return (
+            item.get("session_id"),
+            item.get("role"),
+            item.get("content_hash"),
+            round(float(item.get("timestamp") or 0), 3),
+        )
+
+    session_ids = {item.get("session_id") for item in payloads if item.get("session_id")}
+    hashes = {item.get("content_hash") for item in payloads if item.get("content_hash")}
+    if not session_ids or not hashes:
+        return payloads
+
+    existing = {
+        key(
+            {
+                "session_id": row.session_id,
+                "role": row.role,
+                "content_hash": row.content_hash,
+                "timestamp": row.timestamp,
+            }
+        )
+        for row in db.scalars(
+            select(MessageCache).where(
+                MessageCache.session_id.in_(session_ids),
+                MessageCache.content_hash.in_(hashes),
+            )
+        )
+    }
+    kept: list[dict] = []
+    seen = set(existing)
+    for item in payloads:
+        item_key = key(item)
+        if item_key in seen:
+            continue
+        seen.add(item_key)
+        kept.append(item)
+    return kept
+
+
 def get_state(db: Session, key: str, default: str | None = None) -> str | None:
     row = db.get(SyncState, key)
     if row and row.value is not None:
@@ -103,6 +149,7 @@ def sync_now(
                 break
             payloads = [normalize_message(row) for row in rows]
             payloads = [payload for payload in payloads if payload]
+            payloads = drop_replayed_messages(db, payloads)
             if payloads:
                 statement = (
                     sqlite_insert(MessageCache)

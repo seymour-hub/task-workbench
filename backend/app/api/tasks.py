@@ -101,6 +101,7 @@ def update_task(task_id: int, payload: TaskUpdate, db: Session = Depends(get_db)
 def delete_task(task_id: int, db: Session = Depends(get_db)):
     task = _get_task(db, task_id)
     task.deleted_at = time.time()
+    task.code = None
     db.add(
         TaskEvent(task_id=task.id, type="deleted", actor="me", note="任务已删除")
     )

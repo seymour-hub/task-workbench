@@ -111,3 +111,45 @@ def test_multiple_agent_markers_create_tasks_without_questions(db, monkeypatch):
         == 0
     )
     assert len(calls) == 1
+
+
+def test_duplicate_marker_reuses_existing_task(db, monkeypatch):
+    from app.models import Task
+    from app.schemas import TaskCreate
+    from app.services.task_service import create_task
+
+    existing = create_task(db, TaskCreate(title="客户AI安全需求评估报告"))
+    db.add(SyncState(key="agent_marker_cursor.message_id", value="0"))
+    db.add(SessionCache(id="session-dup", source="feishu", chat_id="oc_test"))
+    db.add(
+        MessageCache(
+            hermes_message_id=3001,
+            session_id="session-dup",
+            role="assistant",
+            content="报告完成。\n[[WB_START: 客户AI安全需求评估报告]]",
+            content_hash="hash-dup",
+            timestamp=time.time(),
+        )
+    )
+    db.commit()
+    monkeypatch.setattr(
+        intent_service,
+        "send_text",
+        lambda *args, **kwargs: {"ok": True},
+    )
+
+    result = intent_service.scan_agent_markers(db)
+
+    assert result["starts"] == 0
+    assert result["reused"] == 1
+    assert db.query(Task).count() == 1
+    assert db.query(Task).one().id == existing.id
+
+
+def test_context_compaction_is_ignored():
+    from app.ingest.normalizer import is_context_compaction
+
+    assert is_context_compaction(
+        "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below."
+    )
+    assert not is_context_compaction("T0031任务重新启动")

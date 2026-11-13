@@ -26,6 +26,16 @@ def clean_text(value: str | None) -> str:
 
 
 OUT_OF_BAND_MARKER = "[OUT-OF-BAND USER MESSAGE"
+COMPACTION_MARKER = "[CONTEXT COMPACTION"
+
+
+def is_context_compaction(value: str | None) -> bool:
+    """Hermes' post-compaction handoff is background, not a new instruction."""
+    text = (value or "").lstrip()
+    return text.startswith(COMPACTION_MARKER) or (
+        "REFERENCE ONLY" in text[:200]
+        and "compacted into the summary below" in text[:400]
+    )
 
 
 def unwrap_user_text(value: str | None) -> str:
