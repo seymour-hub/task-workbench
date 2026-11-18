@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..ai.deduper import similarity
+from ..ai.deduper import find_similar, similarity
 from ..db import get_db
 from ..models import (
     Deliverable,
@@ -287,6 +287,49 @@ def accept_item(
             raise HTTPException(status_code=400, detail="任务标题为空")
         due_at = payload.due_at if payload.due_at is not None else data.get("due_at")
         segment = db.get(Segment, item.segment_id) if item.segment_id else None
+
+        # The same work often yields several overlapping candidates. Reuse an
+        # already-linked or clearly similar task instead of creating another.
+        existing_task = None
+        if segment and segment.task_id:
+            existing_task = db.get(Task, segment.task_id)
+        if existing_task is None or existing_task.deleted_at is not None:
+            similar_id, _, _score = find_similar(db, title, threshold=64)
+            if similar_id:
+                existing_task = db.get(Task, similar_id)
+        if existing_task is not None and existing_task.deleted_at is None:
+            existing_task.source_message_ids = sorted(
+                set(
+                    (existing_task.source_message_ids or [])
+                    + (data.get("evidence_message_ids") or [])
+                    + (item.source_message_ids or [])
+                )
+            )
+            if segment and segment.task_id != existing_task.id:
+                segment.task_id = existing_task.id
+                segment.link_method = "candidate_dedupe"
+                segment.link_confidence = 0.9
+            db.add(
+                TaskEvent(
+                    task_id=existing_task.id,
+                    type="merged",
+                    note=f"候选任务《{title}》合并到本任务",
+                    actor="ai",
+                )
+            )
+            issues, deliverables, notes = _attach_segment_assets(db, item, existing_task)
+            item.status = "accepted"
+            item.reviewed_at = time.time()
+            db.commit()
+            result = serialize_task(db, existing_task)
+            result["auto_attached"] = {
+                "issues": issues,
+                "deliverables": deliverables,
+                "notes": notes,
+            }
+            result["merged_into"] = existing_task.id
+            return result
+
         task = create_task(
             db,
             TaskCreate(
