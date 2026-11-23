@@ -249,6 +249,11 @@ def init_db() -> None:
                         auto_attach=True,
                     )
                 )
+            db.flush()
+
+        from .services.task_folders import ensure_all_task_folders
+
+        ensure_all_task_folders(db)
 
         target = get_setting(db, "notify.target") or ""
         if not target:

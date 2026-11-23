@@ -46,3 +46,24 @@ def test_deleted_codes_are_not_reused(db):
     db.commit()
 
     assert next_task_code(db) == "T0002"
+
+
+def test_existing_folder_survives_title_change(db, tmp_path):
+    from app.models import DeliverableRoot
+    from app.services.task_folders import ensure_task_folder
+
+    (tmp_path / "documents").mkdir()
+    db.add(DeliverableRoot(label="Hermes 输出", path=str(tmp_path), enabled=True, depth=4))
+    db.commit()
+
+    task = create_task(db, TaskCreate(title="旧标题"))
+    db.commit()
+    old = tmp_path / "documents" / f"{task.code}-旧标题"
+    assert old.is_dir()
+
+    task.title = "新标题"
+    db.commit()
+    again = ensure_task_folder(db, task)
+
+    assert again == old
+    assert not (tmp_path / "documents" / f"{task.code}-新标题").exists()

@@ -38,9 +38,27 @@ def ensure_task_folder(db: Session, task: Task) -> Path | None:
     documents = base / "documents"
     if documents.is_dir():
         base = documents
+
+    # Keep the existing folder even if the task title has since changed.
+    for existing in base.glob(f"{task.code}-*"):
+        if existing.is_dir():
+            return existing
+
     folder = base / task_folder_name(task)
     try:
         folder.mkdir(parents=True, exist_ok=True)
     except OSError:
         return None
     return folder
+
+
+def ensure_all_task_folders(db: Session) -> list[str]:
+    """Backfill the output folder for every active task."""
+    created: list[str] = []
+    for task in db.scalars(select(Task).where(Task.deleted_at.is_(None))):
+        if not task.code:
+            continue
+        result = ensure_task_folder(db, task)
+        if result is not None:
+            created.append(str(result))
+    return created
